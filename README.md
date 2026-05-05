@@ -67,7 +67,7 @@ lark-cli auth login --recommend
 ### 2. 安装与初始化
 ```bash
 # 克隆仓库
-git clone https://github.com/YOUR_USERNAME/context-wizard.git
+git clone https://github.com/KitchSupermonkey/context-wizard.git
 cd context-wizard
 
 # 初始化多维表格 (自动创建 Base 并写入配置)
