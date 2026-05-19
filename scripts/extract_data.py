@@ -9,13 +9,20 @@ import re
 from cli import LarkCLI
 
 def is_feishu_doc(url):
-    return "feishu.cn/docx/" in url or "larksuite.com/docx/" in url
+    return (
+        "feishu.cn/docx/" in url
+        or "feishu.cn/doc/" in url
+        or "larksuite.com/docx/" in url
+        or "larksuite.com/doc/" in url
+        or "larksuite.cn/docx/" in url
+        or "larksuite.cn/doc/" in url
+    )
 
 def is_feishu_sheet(url):
-    return "feishu.cn/sheet/" in url or "larksuite.cn/sheet/" in url
+    return "feishu.cn/sheet/" in url or "larksuite.com/sheet/" in url or "larksuite.cn/sheet/" in url
 
 def extract_doc_token(url):
-    match = re.search(r'docx/([a-zA-Z0-9]+)', url)
+    match = re.search(r'docx?/([a-zA-Z0-9]+)', url)
     return match.group(1) if match else "N/A"
 
 def main():
