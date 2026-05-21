@@ -6,7 +6,9 @@ __pycache__/
 
 # Config (contains tokens)
 scripts/config.json
+.context_wizard
 .context_wizard/
+.context_wizard.*
 
 # OS
 .DS_Store
