@@ -93,6 +93,49 @@ Identify the input type: Feishu Doc/Sheet link, image, or text.
 Identify the `Entity Type`: Project, Client, Partner, Product.
 Identify the `Project Name`: The name of the project this context belongs to.
 
+### Automation Mode: Feishu Drive Auto Scan
+When the user asks to 自动扫描 / 定时扫描 / 扫描飞书文档 / 自动入库 / review candidates, use the auto-scan scripts.
+
+**Default behavior:** not dry-run. High-confidence candidates are automatically ingested. Medium/low-confidence candidates stay in the review queue.
+
+Commands:
+
+```bash
+# Daily freshness scan: recent changes, then ingest high-confidence candidates
+python scripts/scan_drive.py --mode daily
+
+# Weekly historical backfill scan: advances the backfill cursor
+python scripts/scan_drive.py --mode weekly
+
+# Check queue counts
+python scripts/ingest_candidates.py status
+
+# Show candidates that need review
+python scripts/ingest_candidates.py review
+
+# Approve selected candidates and optionally ingest immediately
+python scripts/ingest_candidates.py approve <candidate_id> --ingest
+
+# Skip selected candidates
+python scripts/ingest_candidates.py skip <candidate_id>
+python scripts/ingest_candidates.py approve --all --ingest
+
+# Force rescan for an existing candidate ID, token, or URL
+python scripts/ingest_candidates.py rescan <candidate_id_or_token_or_url> --ingest
+```
+
+Auto-scan uses `lark-cli drive +search --as user`, so user identity must be configured. If scanning fails with an auth/config error, guide the user to run:
+
+```bash
+lark-cli config init --new
+lark-cli auth login --recommend --no-wait
+lark-cli auth login --scope "search:docs:read" --no-wait
+```
+
+If Feishu says the app is pending approval for `search:docs:read`, wait for the Feishu app/admin approval and retry the scan after approval.
+
+Auto-scan uses post-review by default: discovered resources are written into one or more topic tables with `状态`, `扫描分数`, `扫描原因`, and `入库方式`. Users can later mark bad records as `失效` or delete them directly in Feishu Base. State is stored in `.context_wizard/scan_state.jsonl`; historical backfill progress is stored in `.context_wizard/backfill_cursor.json`.
+
 ### Step 2: Delegate Extraction (CRITICAL STEP)
 - **Do NOT** run extraction scripts or read content in this main session.
 - **Spawn a Sub-Agent** with the following specific task:
@@ -176,6 +219,12 @@ The target Feishu Base has the following fields:
 - `关联文档` (Source Link: Feishu Doc URL)
 - `文档 Token` (Doc Token for deduplication)
 - `最后更新` (Last Updated)
+- `状态` (Record status: 有效/待复核/失效)
+- `扫描分数` (Discovery score)
+- `扫描原因` (Scoring rationale)
+- `入库方式` (Manual or auto-scan source)
+- `候选 ID` (Local scan candidate ID)
+- `主题表` (Topic table that received this copy)
 
 ## Retrieval Mode (Supports both project-specific and global search)
 To prevent context overload when retrieving long histories:

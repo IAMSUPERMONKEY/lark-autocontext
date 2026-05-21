@@ -84,6 +84,44 @@ python scripts/init_base.py
 | 🔧 **斜杠命令** | `/context-wizard https://feishu.cn/docx/...` | 明确的指令入口 |
 | 🔍 **提问检索** | "我们关于优惠券做了什么决策？" | 自动跨表搜索 + 时间线回答 |
 
+### 4. 自动扫描飞书文档
+
+如果你不想手动逐个提供文档，可以启用自动扫描。它会通过 `lark-cli drive +search --as user` 发现你有权限访问的飞书云文档，高置信候选会直接入库，中低置信候选会进入待确认队列。
+
+自动扫描需要用户身份和搜索权限：
+
+```bash
+lark-cli config init --new
+lark-cli auth login --recommend --no-wait
+lark-cli auth login --scope "search:docs:read" --no-wait
+```
+
+如果飞书提示应用正在等待 `search:docs:read` 审批，等管理员/飞书侧审批通过后再重试扫描。
+
+```bash
+# 每日轻扫：处理最近变化
+python scripts/scan_drive.py --mode daily
+
+# 每周深扫：推进历史文档回填
+python scripts/scan_drive.py --mode weekly
+
+# 查看状态和需要人工关注的候选
+python scripts/ingest_candidates.py status
+python scripts/ingest_candidates.py review
+
+# 兼容旧状态：批准历史待确认候选并立即入库
+python scripts/ingest_candidates.py approve <candidate_id> --ingest
+python scripts/ingest_candidates.py approve --all --ingest
+
+# 跳过候选
+python scripts/ingest_candidates.py skip <candidate_id>
+
+# 手动重扫某个候选、token 或 URL
+python scripts/ingest_candidates.py rescan <candidate_id_or_token_or_url> --ingest
+```
+
+自动扫描不是 dry-run：默认采用**后置审核**，会把发现的可定位资源先写入主题表，并在记录里显示 `扫描分数`、`扫描原因`、`入库方式` 和 `状态`。用户认为不合适时，直接在多维表格中把 `状态` 改成 `失效`，或删除记录即可。扫描状态保存在 `.context_wizard/scan_state.jsonl`，历史回填游标保存在 `.context_wizard/backfill_cursor.json`。
+
 ---
 
 ## 🏗️ 技术架构
@@ -91,7 +129,7 @@ python scripts/init_base.py
 本项目展示了 `lark-cli` 在复杂业务流中的最佳实践：
 - **Sub-Agent 隔离架构**：入库与检索均交由 Sub-Agent 执行，主 Agent 仅负责交互，彻底解决长上下文窗口污染问题。
 - **一项目一表 (One Project One Table)**：动态多维表格架构，支持无限扩展，互不干扰。
-- **自动化流水线**：`lark-cli` 驱动的全链路脚本（提取 -> 建表 -> 写入 -> 仪表板生成 -> 全局检索）。
+- **自动化流水线**：`lark-cli` 驱动的全链路脚本（扫描 -> 评分 -> 提取 -> 建表 -> 写入 -> 仪表板生成 -> 全局检索）。
 
 ---
 

@@ -25,15 +25,27 @@ def search_project_context(app_token, project_name):
     
     target_table_id = None
     for t in tables:
-        if project_name in t.get("name", ""):
+        if project_name == t.get("name", ""):
             target_table_id = t["id"]
             break
+    if len(project_name) >= 4:
+        for t in tables:
+            if target_table_id:
+                break
+            if project_name in t.get("name", ""):
+                target_table_id = t["id"]
+                break
             
     if not target_table_id:
         return json.dumps({"error": f"Project table '{project_name}' not found."}, ensure_ascii=False)
 
     # 2. Retrieve records from that table
-    records_output = cli.run(["base", "+record-list", "--base-token", app_token, "--table-id", target_table_id])
+    records_output = cli.run([
+        "base", "+record-list",
+        "--base-token", app_token,
+        "--table-id", target_table_id,
+        "--format", "json"
+    ])
     records_data = json.loads(records_output)
     
     # Parse the shortcut command response format
