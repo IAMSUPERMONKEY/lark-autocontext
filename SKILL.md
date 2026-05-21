@@ -118,6 +118,7 @@ python scripts/ingest_candidates.py approve <candidate_id> --ingest
 
 # Skip selected candidates
 python scripts/ingest_candidates.py skip <candidate_id>
+python scripts/ingest_candidates.py approve --all --ingest
 
 # Force rescan for an existing candidate ID, token, or URL
 python scripts/ingest_candidates.py rescan <candidate_id_or_token_or_url> --ingest
@@ -133,7 +134,7 @@ lark-cli auth login --scope "search:docs:read" --no-wait
 
 If Feishu says the app is pending approval for `search:docs:read`, wait for the Feishu app/admin approval and retry the scan after approval.
 
-State is stored in `.context_wizard/scan_state.jsonl`; historical backfill progress is stored in `.context_wizard/backfill_cursor.json`.
+Auto-scan uses post-review by default: discovered resources are written into one or more topic tables with `状态`, `扫描分数`, `扫描原因`, and `入库方式`. Users can later mark bad records as `失效` or delete them directly in Feishu Base. State is stored in `.context_wizard/scan_state.jsonl`; historical backfill progress is stored in `.context_wizard/backfill_cursor.json`.
 
 ### Step 2: Delegate Extraction (CRITICAL STEP)
 - **Do NOT** run extraction scripts or read content in this main session.
@@ -218,6 +219,12 @@ The target Feishu Base has the following fields:
 - `关联文档` (Source Link: Feishu Doc URL)
 - `文档 Token` (Doc Token for deduplication)
 - `最后更新` (Last Updated)
+- `状态` (Record status: 有效/待复核/失效)
+- `扫描分数` (Discovery score)
+- `扫描原因` (Scoring rationale)
+- `入库方式` (Manual or auto-scan source)
+- `候选 ID` (Local scan candidate ID)
+- `主题表` (Topic table that received this copy)
 
 ## Retrieval Mode (Supports both project-specific and global search)
 To prevent context overload when retrieving long histories:

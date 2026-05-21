@@ -286,7 +286,7 @@ def score_candidate(
         score -= 10
         reasons.append("review-required-type")
 
-    if score >= AUTO_INGEST_THRESHOLD:
+    if doc_type in SUPPORTED_DISCOVERY_TYPES and (candidate.get("token") or candidate.get("url")):
         action = "auto_ingest"
     elif score >= REVIEW_THRESHOLD:
         action = "needs_review"
@@ -352,7 +352,7 @@ def infer_tags(title: str, content: str = "") -> str:
 
 
 def infer_project_name(title: str) -> str:
-    separators = [" - ", "_", "｜", "|", "：", ":", " "]
+    separators = [" - ", "-", "—", "_", "｜", "|", "：", ":", " "]
     clean_title = title.strip() or "未命名项目"
     head = clean_title
     for separator in separators:
@@ -373,3 +373,26 @@ def infer_project_name(title: str) -> str:
             break
 
     return (head or clean_title)[:40]
+
+
+def infer_topic_names(
+    title: str,
+    content: str = "",
+    known_project_terms: Optional[List[str]] = None,
+) -> List[str]:
+    """Return one or more topic tables where this document should appear."""
+    source = f"{title}\n{content[:2000]}"
+    topics: List[str] = []
+
+    primary = infer_project_name(title)
+    if primary:
+        topics.append(primary)
+
+    for term in known_project_terms or []:
+        term = term.strip()
+        if len(term) < 2 or term in {"数据表", "业务上下文"}:
+            continue
+        if term in source and term not in topics:
+            topics.append(term)
+
+    return topics[:5] or ["未命名项目"]

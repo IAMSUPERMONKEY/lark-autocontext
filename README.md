@@ -105,19 +105,22 @@ python scripts/scan_drive.py --mode daily
 # 每周深扫：推进历史文档回填
 python scripts/scan_drive.py --mode weekly
 
-# 查看状态和待确认候选
+# 查看状态和需要人工关注的候选
 python scripts/ingest_candidates.py status
 python scripts/ingest_candidates.py review
 
-# 批准或跳过候选
+# 兼容旧状态：批准历史待确认候选并立即入库
 python scripts/ingest_candidates.py approve <candidate_id> --ingest
+python scripts/ingest_candidates.py approve --all --ingest
+
+# 跳过候选
 python scripts/ingest_candidates.py skip <candidate_id>
 
 # 手动重扫某个候选、token 或 URL
 python scripts/ingest_candidates.py rescan <candidate_id_or_token_or_url> --ingest
 ```
 
-自动扫描不是 dry-run：默认会直接入库高置信候选。扫描状态保存在 `.context_wizard/scan_state.jsonl`，历史回填游标保存在 `.context_wizard/backfill_cursor.json`。
+自动扫描不是 dry-run：默认采用**后置审核**，会把发现的可定位资源先写入主题表，并在记录里显示 `扫描分数`、`扫描原因`、`入库方式` 和 `状态`。用户认为不合适时，直接在多维表格中把 `状态` 改成 `失效`，或删除记录即可。扫描状态保存在 `.context_wizard/scan_state.jsonl`，历史回填游标保存在 `.context_wizard/backfill_cursor.json`。
 
 ---
 

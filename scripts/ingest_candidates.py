@@ -18,8 +18,10 @@ from score_candidates import (
     extract_time_hints,
     infer_doc_type_from_title,
     infer_project_name,
+    infer_topic_names,
     infer_tags,
 )
+from cli import LarkCLI
 
 
 SCRIPT_DIR = os.path.dirname(__file__)
@@ -52,22 +54,41 @@ def source_for_candidate(candidate: Dict[str, Any]) -> str:
 def extract_raw_content(candidate: Dict[str, Any]) -> Dict[str, Any]:
     doc_type = candidate.get("doc_type", "")
     if doc_type not in {"docx", "doc", "sheet"}:
-        raise ValueError(f"文档类型 {doc_type or '未知'} 暂不支持自动读取，已转入待确认")
+        return metadata_only_content(candidate, f"文档类型 {doc_type or '未知'} 暂不支持自动读取")
     source = source_for_candidate(candidate)
     if not source:
-        raise ValueError("候选缺少 URL 或 token，无法读取")
+        return metadata_only_content(candidate, "候选缺少 URL 或 token，无法读取")
     if doc_type == "sheet" and "/sheet" not in source and "/sheets" not in source:
-        raise ValueError("Wiki 中的表格暂不自动读取，已转入待确认")
+        return metadata_only_content(candidate, "Wiki 中的表格暂不自动读取")
     result = run_script("extract_data.py", [source])
     if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "extract_data.py failed")
+        return metadata_only_content(candidate, result.stderr.strip() or result.stdout.strip() or "extract_data.py failed")
     try:
         data = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"extract_data.py returned invalid JSON: {exc}") from exc
+        return metadata_only_content(candidate, f"extract_data.py returned invalid JSON: {exc}")
     if data.get("error"):
-        raise RuntimeError(str(data["error"]))
+        return metadata_only_content(candidate, str(data["error"]))
     return data
+
+
+def metadata_only_content(candidate: Dict[str, Any], reason: str) -> Dict[str, Any]:
+    title = candidate.get("title") or "未命名文档"
+    doc_type = candidate.get("doc_type") or "未知类型"
+    url = candidate.get("url") or source_for_candidate(candidate)
+    content = (
+        f"{title}\n"
+        f"自动扫描发现的 {doc_type} 资源。\n"
+        f"读取状态：仅记录元数据。\n"
+        f"原因：{reason}\n"
+        f"链接：{url}"
+    )
+    return {
+        "content": content,
+        "doc_token": candidate.get("token") or "N/A",
+        "metadata_only": True,
+        "read_error": reason,
+    }
 
 
 def meaningful_excerpt(content: str, limit: int = 500) -> str:
@@ -104,7 +125,26 @@ def build_context_payload(candidate: Dict[str, Any], extracted: Dict[str, Any]) 
         "tags": infer_tags(title, content),
         "source_link": source_link,
         "doc_token": doc_token,
+        "scan_score": candidate.get("score"),
+        "scan_reason": candidate.get("reason"),
+        "candidate_id": candidate.get("id"),
+        "record_status": "有效",
+        "ingest_method": "自动扫描",
     }
+
+
+def known_topic_terms() -> List[str]:
+    cli = LarkCLI()
+    app_token = cli.get_base_token()
+    if not app_token:
+        return []
+    try:
+        output = cli.run(["base", "+table-list", "--base-token", app_token, "--limit", "100"])
+        data = json.loads(output)
+    except Exception:
+        return []
+    tables = data.get("data", {}).get("tables", [])
+    return [table.get("name", "") for table in tables if table.get("name")]
 
 
 def get_table_id(project_name: str) -> str:
@@ -112,9 +152,12 @@ def get_table_id(project_name: str) -> str:
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "get_or_create_table.py failed")
     lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    for line in reversed(lines):
+        if line.startswith("tbl"):
+            return line
     if not lines:
         raise RuntimeError("get_or_create_table.py did not return a table ID")
-    return lines[-1]
+    raise RuntimeError(f"get_or_create_table.py did not return a table ID: {lines[-1]}")
 
 
 def write_context(payload: Dict[str, Any], table_id: str) -> str:
@@ -133,16 +176,29 @@ def ingest_one(candidate: Dict[str, Any], state_path: str = DEFAULT_STATE_PATH) 
         missing = [key for key in required if not payload.get(key)]
         if missing:
             raise ValueError(f"抽取字段不完整: {', '.join(missing)}")
-        table_id = get_table_id(payload["project_name"])
-        write_context(payload, table_id)
+        topics = infer_topic_names(
+            payload["entity_name"],
+            str(extracted.get("content") or ""),
+            known_project_terms=known_topic_terms(),
+        )
+        table_ids: Dict[str, str] = {}
+        for topic in topics:
+            topic_payload = dict(payload)
+            topic_payload["project_name"] = topic
+            topic_payload["topic_name"] = topic
+            table_id = get_table_id(topic)
+            write_context(topic_payload, table_id)
+            table_ids[topic] = table_id
         return update_record(candidate, {
             "status": "auto_ingested",
             "attempt_count": attempt_count,
-            "project_name": payload["project_name"],
+            "project_name": topics[0],
+            "topic_names": topics,
             "entity_name": payload["entity_name"],
-            "table_id": table_id,
-            "reason": "auto ingested",
-            "last_error": "",
+            "table_id": table_ids.get(topics[0]),
+            "table_ids": table_ids,
+            "reason": "auto ingested post-review",
+            "last_error": extracted.get("read_error", ""),
         }, state_path=state_path)
     except ValueError as exc:
         return update_record(candidate, {
@@ -208,13 +264,30 @@ def mark_records(ids: List[str], status: str, state_path: str = DEFAULT_STATE_PA
         if not record:
             print(f"未找到候选: {record_id}")
             continue
-        changes = {"status": status, "reason": f"user marked {status}"}
+        changes = {"status": status}
         if status == "queued":
             changes["action"] = "auto_ingest"
             changes["lane"] = "review"
+        else:
+            changes["reason"] = f"user marked {status}"
         update_record(record, changes, state_path=state_path)
         changed += 1
     return changed
+
+
+def mark_all_review_records(status: str, state_path: str = DEFAULT_STATE_PATH) -> List[str]:
+    records = latest_list(state_path=state_path, status="needs_review")
+    changed_ids: List[str] = []
+    for record in records:
+        changes = {"status": status}
+        if status == "queued":
+            changes["action"] = "auto_ingest"
+            changes["lane"] = "review"
+        else:
+            changes["reason"] = f"user marked {status}"
+        updated = update_record(record, changes, state_path=state_path)
+        changed_ids.append(updated["id"])
+    return changed_ids
 
 
 def rescan_targets(targets: List[str], state_path: str = DEFAULT_STATE_PATH) -> List[str]:
@@ -281,7 +354,8 @@ def main() -> None:
     review_parser.add_argument("--limit", type=int, default=20)
 
     approve_parser = subparsers.add_parser("approve", parents=[state_parent])
-    approve_parser.add_argument("ids", nargs="+")
+    approve_parser.add_argument("ids", nargs="*")
+    approve_parser.add_argument("--all", action="store_true", help="Approve every needs_review candidate.")
     approve_parser.add_argument("--ingest", action="store_true")
 
     skip_parser = subparsers.add_parser("skip", parents=[state_parent])
@@ -304,10 +378,15 @@ def main() -> None:
         records = latest_list(state_path=args.state_path, status="needs_review")[:args.limit]
         print_candidates(records)
     elif command == "approve":
-        changed = mark_records(args.ids, "queued", state_path=args.state_path)
+        if args.all:
+            approved_ids = mark_all_review_records("queued", state_path=args.state_path)
+            changed = len(approved_ids)
+        else:
+            approved_ids = args.ids
+            changed = mark_records(args.ids, "queued", state_path=args.state_path)
         print(f"已批准候选: {changed}")
         if args.ingest and changed:
-            report = ingest_candidates(state_path=args.state_path, ids=args.ids)
+            report = ingest_candidates(state_path=args.state_path, ids=approved_ids)
             print("入库结果:")
             for key, value in report.items():
                 print(f"- {key}: {value}")

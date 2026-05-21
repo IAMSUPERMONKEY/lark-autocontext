@@ -14,6 +14,7 @@ if sys.platform == "win32":
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 from cli import LarkCLI
+from context_schema import CONTEXT_FIELDS, ensure_context_fields
 
 def parse_json_output(output):
     """Parse JSON output from lark-cli."""
@@ -48,27 +49,8 @@ def run_init(base_name="业务上下文引擎", folder_token=None):
             return
 
         print("🔧 Configuring Fields...")
-        # Schema matches SKILL.md + write_context.py mapping
-        # ⚠️ CRITICAL: These fields MUST match write_context.py's mapping keys exactly
-        fields_to_create = [
-            ("实体名称", "text"),
-            ("实体类型", "select", ["项目", "客户", "合作伙伴", "产品"]),
-            ("文档类型", "select", ["会议纪要", "需求文档", "复盘报告", "运营方案", "合作协议", "数据分析", "竞品调研", "其他"]),
-            ("核心结论", "text"),
-            ("关键时间", "text"),
-            ("涉及人员", "text"),
-            ("标签", "text"),
-            ("关联文档", "url"),
-            ("文档 Token", "text"),
-            ("最后更新", "datetime")
-        ]
-        
-        for field_info in fields_to_create:
-            name = field_info[0]
-            type_id = field_info[1]
-            opts = field_info[2] if len(field_info) > 2 else None
-            print(f"   - Creating field '{name}'...")
-            cli.create_field(app_token, table_id, type_id, name, options=opts)
+        print(f"   - Ensuring {len(CONTEXT_FIELDS)} fields...")
+        ensure_context_fields(cli, app_token, table_id)
 
         print("📊 Creating Views...")
         cli.create_view(app_token, table_id, "项目看板", "kanban")

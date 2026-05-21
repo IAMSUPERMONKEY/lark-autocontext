@@ -11,11 +11,11 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from ingest_candidates import build_context_payload, rescan_targets
+from ingest_candidates import build_context_payload, extract_raw_content, rescan_targets
 from scan_state import append_event
 from scan_drive import extract_search_results
 from scan_state import append_event, latest_list, latest_records, update_record
-from score_candidates import classify_candidate
+from score_candidates import classify_candidate, infer_topic_names
 
 
 class AutoScanTests(unittest.TestCase):
@@ -33,7 +33,7 @@ class AutoScanTests(unittest.TestCase):
         self.assertGreaterEqual(candidate["score"], 55)
         self.assertEqual(candidate["token"], "AbCd1234")
 
-    def test_low_value_template_goes_to_review_or_defer(self):
+    def test_low_value_template_is_ingested_with_low_score(self):
         raw = {
             "title": "个人临时草稿模板",
             "url": "https://feishu.cn/docx/Tpl1234",
@@ -42,8 +42,9 @@ class AutoScanTests(unittest.TestCase):
         }
         candidate = classify_candidate(raw, now=datetime(2026, 5, 19, tzinfo=timezone.utc))
 
-        self.assertNotEqual(candidate["action"], "auto_ingest")
-        self.assertIn(candidate["status"], {"needs_review", "defer"})
+        self.assertEqual(candidate["action"], "auto_ingest")
+        self.assertEqual(candidate["status"], "queued")
+        self.assertLess(candidate["score"], 55)
 
     def test_state_latest_record_wins(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -86,7 +87,7 @@ class AutoScanTests(unittest.TestCase):
         self.assertEqual(candidate["doc_type"], "docx")
         self.assertEqual(candidate["action"], "auto_ingest")
 
-    def test_sheet_candidates_require_review(self):
+    def test_sheet_candidates_are_queued_for_post_review(self):
         raw = {
             "entity_type": "WIKI",
             "title_highlighted": "超猩甄选组织激励方案-运营组",
@@ -101,7 +102,8 @@ class AutoScanTests(unittest.TestCase):
         candidate = classify_candidate(raw, now=datetime(2026, 5, 20, tzinfo=timezone.utc))
 
         self.assertEqual(candidate["doc_type"], "sheet")
-        self.assertEqual(candidate["action"], "needs_review")
+        self.assertEqual(candidate["action"], "auto_ingest")
+        self.assertEqual(candidate["status"], "queued")
 
     def test_rule_based_payload_uses_title_and_content(self):
         candidate = {
@@ -118,6 +120,8 @@ class AutoScanTests(unittest.TestCase):
         self.assertEqual(payload["project_name"], "星选咖啡")
         self.assertEqual(payload["doc_type"], "复盘报告")
         self.assertEqual(payload["doc_token"], "AbCd1234")
+        self.assertEqual(payload["record_status"], "有效")
+        self.assertEqual(payload["ingest_method"], "自动扫描")
         self.assertIn("会员券成本", payload["core_conclusion"])
         self.assertIn("6月15日", payload["key_time"])
 
@@ -163,6 +167,32 @@ class AutoScanTests(unittest.TestCase):
             self.assertEqual(ids, ["doc-1"])
             self.assertEqual(latest["doc-1"]["title"], "甄选625方案讨论会 - 会议纪要")
             self.assertEqual(latest["doc-1"]["status"], "queued")
+
+    def test_metadata_only_content_for_unreadable_candidate(self):
+        candidate = {
+            "title": "甄选数据",
+            "url": "https://feishu.cn/base/Base123",
+            "token": "Base123",
+            "doc_type": "bitable",
+        }
+
+        extracted = extract_raw_content(candidate)
+
+        self.assertTrue(extracted["metadata_only"])
+        self.assertIn("仅记录元数据", extracted["content"])
+        self.assertEqual(extracted["doc_token"], "Base123")
+
+    def test_topic_names_include_existing_matching_topics(self):
+        topics = infer_topic_names(
+            "超猩甄选服务运营报告-4月",
+            "本报告包含商户运营、企服运营和甄选数据。",
+            known_project_terms=["甄选", "企服", "业务上下文"],
+        )
+
+        self.assertEqual(topics[0], "超猩甄选服务运营报告")
+        self.assertIn("甄选", topics)
+        self.assertIn("企服", topics)
+        self.assertNotIn("业务上下文", topics)
 
 
 if __name__ == "__main__":

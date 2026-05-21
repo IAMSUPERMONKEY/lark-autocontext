@@ -62,7 +62,13 @@ def main():
         "标签": data.get("tags"),
         "关联文档": data.get("source_link"),
         "文档 Token": data.get("doc_token"),
-        "最后更新": datetime.now().strftime("%Y-%m-%d")
+        "最后更新": datetime.now().strftime("%Y-%m-%d"),
+        "状态": data.get("record_status") or "有效",
+        "扫描分数": data.get("scan_score"),
+        "扫描原因": data.get("scan_reason"),
+        "入库方式": data.get("ingest_method") or ("自动扫描" if data.get("candidate_id") else "手动保存"),
+        "候选 ID": data.get("candidate_id"),
+        "主题表": data.get("topic_name") or data.get("project_name"),
     }
     # Clean None values
     record_data = {k: v for k, v in mapping.items() if v is not None}
