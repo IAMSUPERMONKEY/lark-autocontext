@@ -1,4 +1,8 @@
 {
-  "base_token": "YOUR_BASE_TOKEN_HERE",
-  "description": "业务上下文引擎 - 多维表格 Base Token。请勿将真实 Token 提交到 Git。"
+  "feishu": {
+    "base_token": "YOUR_BASE_TOKEN_HERE",
+    "description": "Optional: Feishu Bitable for visualization"
+  },
+  "bundle_path": "./bundle",
+  "description": "Lark AutoContext - OKF Bundle path and optional Feishu config"
 }

@@ -1,0 +1,20 @@
+{
+  "sources": [
+    {
+      "type": "wiki",
+      "token": "wiki_token_xxx",
+      "name": "产品知识库"
+    },
+    {
+      "type": "folder",
+      "token": "folder_token_xxx",
+      "name": "项目文档"
+    },
+    {
+      "type": "bitable",
+      "token": "app_token_xxx",
+      "name": "业务数据"
+    }
+  ],
+  "scan_interval": "manual"
+}
