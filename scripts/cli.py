@@ -130,3 +130,30 @@ class LarkCLI:
             return json.dumps(data.get("data", {}).get("value", ""), ensure_ascii=False)
         except:
             return output
+
+    def fetch_wiki_tree(self, space_id):
+        """Fetch all nodes in a wiki space. Returns list of node dicts."""
+        output = self.run(["wiki", "+node-list", "--space-id", space_id, "--page-all"], as_json=False)
+        try:
+            data = json.loads(output)
+            return data.get("data", {}).get("nodes", [])
+        except:
+            return []
+
+    def fetch_folder_files(self, folder_token):
+        """Search files in a Feishu folder. Returns list of file dicts."""
+        output = self.run(["drive", "+search", "--folder-tokens", folder_token], as_json=False)
+        try:
+            data = json.loads(output)
+            return data.get("data", {}).get("files", [])
+        except:
+            return []
+
+    def fetch_doc_title(self, doc_token):
+        """Fetch just the title of a doc. Returns title string."""
+        output = self.run(["docs", "+fetch", "--doc", doc_token, "--doc-format", "markdown"], as_json=False)
+        try:
+            data = json.loads(output)
+            return data.get("data", {}).get("document", {}).get("title", doc_token)
+        except:
+            return doc_token
