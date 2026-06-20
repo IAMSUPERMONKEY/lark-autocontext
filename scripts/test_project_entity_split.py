@@ -14,9 +14,9 @@ from cli import LarkCLI
 # Configuration
 BASE_TOKEN = json.load(open(os.path.join(os.path.dirname(__file__), "config.json")))["base_token"]
 
-# Test scenario: A new doc under the same project "lark-autocontext"
+# Test scenario: A new doc under the same project "context-wizard"
 test_extraction = {
-    "project_name": "lark-autocontext",  # Should reuse existing table
+    "project_name": "context-wizard",  # Should reuse existing table
     "entity_name": "Q2 运营数据复盘",  # New entity
     "entity_type": "项目",
     "current_status": "数据分析",
@@ -25,7 +25,7 @@ test_extraction = {
     "priority": "高",
     "start_date": "2026-04-01",
     "end_date": "2026-06-30",
-    "core_summary": "Q2 lark-autocontext 运营数据复盘，包含用户活跃度、商户转化率分析",
+    "core_summary": "Q2 context-wizard 运营数据复盘，包含用户活跃度、商户转化率分析",
     "key_people": "张三, 李四",
     "doc_token": "TEST_Q2_OPS"
 }

@@ -1,13 +1,13 @@
 ---
-name: lark-autocontext
+name: context-wizard
 description: |
-  Trigger when user mentions ANY of: 保存上下文 / 存入上下文 / 业务记忆 / 项目知识 / 存入知识库 / lark-autocontext / /lark-autocontext / 保存到业务上下文.
+  Trigger when user mentions ANY of: 保存上下文 / 存入上下文 / 业务记忆 / 项目知识 / 存入知识库 / context-wizard / /context-wizard / 保存到业务上下文.
   Also trigger when: user sends a Feishu doc/sheet link with intent to store or remember.
   Supports: save documents, retrieve project history, ask cross-project questions.
   If config.json is missing, guide first-time setup automatically.
 ---
 
-# Lark AutoContext
+# Business Context Wizard
 
 ## 🎯 Quick Start (首次使用引导)
 
@@ -16,7 +16,7 @@ description: |
 Show the user this onboarding card **before any other action**:
 
 ```
-🧙 **Lark AutoContext** — 你的业务记忆库
+🧙 **Business Context Wizard** — 你的业务记忆库
 
 让业务知识永不丢失。把飞书文档、会议纪要、复盘报告自动转化为可检索的结构化知识。
 
@@ -29,7 +29,7 @@ Show the user this onboarding card **before any other action**:
   → 自动提取 → 预览确认 → 入库
 
 方式 2️⃣  斜杠命令
-  /lark-autocontext [文档链接]
+  /context-wizard [文档链接]
   → 同上，更明确的指令
 
 方式 3️⃣  直接提问
@@ -82,8 +82,8 @@ Check for these trigger patterns:
 
 | Pattern | Action |
 |---------|--------|
-| `/lark-autocontext <link>` | Save document to context |
-| `/lark-autocontext <question>` | Search context and answer |
+| `/context-wizard <link>` | Save document to context |
+| `/context-wizard <question>` | Search context and answer |
 | "保存上下文" / "存入上下文" / "保存到业务上下文" | Save document to context |
 | Feishu doc link + save intent | Save document to context |
 | "XX 项目里关于 XX" / "做过什么决策" | Search context and answer |
@@ -112,7 +112,7 @@ Identify the `Project Name`: The name of the project this context belongs to.
   > **重要判断规则**：
   > - 如果文档标题包含日期/阶段/版本号（如"630"、"Q2"、"v2.0"），那通常是具体实体名
   > - 主项目名是更上层的业务线名称
-  > - 例：「lark-autocontext 630项目复盘」→ project_name="lark-autocontext", entity_name="630项目复盘"
+  > - 例：「context-wizard 630项目复盘」→ project_name="context-wizard", entity_name="630项目复盘"
   > 
   > Return ONLY the valid JSON object."
 - **Receive Result**: The Sub-Agent returns the clean JSON.
@@ -181,7 +181,7 @@ The target Feishu Base has the following fields:
 To prevent context overload when retrieving long histories:
 
 ### Mode A: Project-Specific Search (指定项目检索)
-When the user explicitly mentions a project name (e.g., "lark-autocontext项目里关于 XX 的信息").
+When the user explicitly mentions a project name (e.g., "context-wizard项目里关于 XX 的信息").
 
 1. **Identify Intent**: User asks a question about a specific project.
 2. **Spawn a Sub-Agent** with the following specific task:
@@ -220,7 +220,7 @@ When the user asks an **open-ended question** without specifying a project (e.g.
 ## Pitfalls & Lessons Learned
 1. **Preview Card Rendering**: Use plain text list format (Step 5 template), NOT markdown tables. Tables fail to render in Feishu mobile.
 2. **Context ≠ Project Management**: Schema uses generic fields (文档类型/核心结论/关键时间/涉及人员/标签) — NOT project fields (风险/进度/预算/优先级). Any doc type (meeting notes, requirements, reports, agreements) fits this schema.
-3. **Project vs Entity Name**: Table names are project-level (e.g., "lark-autocontext"), not document-level. Multiple docs from same project accumulate in one table as separate records.
+3. **Project vs Entity Name**: Table names are project-level (e.g., "context-wizard"), not document-level. Multiple docs from same project accumulate in one table as separate records.
 4. **关联文档 Auto-fill**: `write_context.py` auto-generates Feishu doc URLs from `doc_token`. Only skips if token is "N/A" or starts with "TEST_".
 5. **Record Updates**: `lark-cli base +record-upsert` without `--record-id` always creates new records. Use `+record-batch-update` with `'{"record_id_list":[...],"patch":{...}}'` for updates.
 6. **lark-cli field-create**: Use `--json '{"name":"X","type":"text"}'` — do NOT include `ui_type` or `property` keys (API rejects them).
