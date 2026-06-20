@@ -1,5 +1,5 @@
 """
-Quick status check and guided setup for Business Context Wizard.
+Quick status check and guided setup for Lark AutoContext.
 Run: python scripts/onboarding.py
 """
 import json
@@ -20,7 +20,7 @@ def check_status():
     cli = LarkCLI()
     config_path = os.path.join(os.path.dirname(__file__), "config.json")
     
-    print("🧙 Business Context Wizard — 状态检查")
+    print("🧙 Lark AutoContext — 状态检查")
     print("=" * 50)
     
     # Check 1: config.json
@@ -71,7 +71,7 @@ def check_status():
     print()
     print("📌 **使用方式:**")
     print("  1. 发文档链接 + '帮我存一下' → 自动入库")
-    print("  2. /context-wizard [链接] → 同上")
+    print("  2. /lark-autocontext [链接] → 同上")
     print("  3. 'XX项目里关于XX的决策？' → 搜索回答")
 
 if __name__ == "__main__":

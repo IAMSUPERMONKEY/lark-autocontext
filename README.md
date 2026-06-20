@@ -1,18 +1,18 @@
-# 🪄 Context Wizard — 基于飞书 CLI 的业务上下文引擎
+# 🪄 Lark AutoContext — 基于飞书 CLI 的业务上下文引擎
 
 > **Powered by Lark CLI** | **跨Agent通用** | **Context Engineering**
 
-Context Wizard 是一个通用的业务上下文管理工具，通过纯 Python 脚本和 `lark-cli` 构建，不依赖任何特定 Agent 框架。它致力于解决 AI 时代的**上下文质量**瓶颈——让散落的信息变为结构化、可追溯、带时间线的业务知识。
+Lark AutoContext 是一个通用的业务上下文管理工具，通过纯 Python 脚本和 `lark-cli` 构建，不依赖任何特定 Agent 框架。它致力于解决 AI 时代的**上下文质量**瓶颈——让散落的信息变为结构化、可追溯、带时间线的业务知识。
 
 ---
 
-## 🧠 为什么需要 Context Wizard？
+## 🧠 为什么需要 Lark AutoContext？
 
 **"AI 的产出 = 模型能力 × Agent 框架 × 上下文质量"**
 
 在业务场景中，模型和Agent能力越来越强，**上下文质量**已成为核心挑战。
 - **痛点**：项目文档散落在飞书云文档、多维表格、聊天记录中。当你需要 AI 协助时，往往面临信息遗漏、上下文断裂、Token 浪费等问题。
-- **解决方案**：Context Wizard 基于 `lark-cli` 构建，自动将碎片化的业务信息提取、结构化、存储到多维表格中，并提供**带时间线的全局检索**。让你的 AI Agent 真正"懂业务"。
+- **解决方案**：Lark AutoContext 基于 `lark-cli` 构建，自动将碎片化的业务信息提取、结构化、存储到多维表格中，并提供**带时间线的全局检索**。让你的 AI Agent 真正"懂业务"。
 
 ---
 
@@ -39,7 +39,7 @@ Context Wizard 是一个通用的业务上下文管理工具，通过纯 Python 
 ### 2. 上下文时间线回溯
 当需要回顾历史决策时：
 - **User**: "我们的运营策略变过几次？"
-- **Context Wizard**: "经历 3 次变更：
+- **Lark AutoContext**: "经历 3 次变更：
   1. 4 月 1 日初定 A 方案 [🔗溯源]
   2. 4 月 15 日因成本调整为 B 方案 [🔗溯源]
   3. 5 月 1 日正式上线 C 方案 [🔗溯源]"
@@ -47,7 +47,7 @@ Context Wizard 是一个通用的业务上下文管理工具，通过纯 Python 
 ### 3. 全局智能检索
 跨项目、跨表格的知识汇总：
 - **User**: "我们在所有项目中关于预算的决策分别是什么？"
-- **Context Wizard**: 自动遍历所有项目表，按时间线汇总并输出决策摘要。
+- **Lark AutoContext**: 自动遍历所有项目表，按时间线汇总并输出决策摘要。
 
 ---
 
@@ -67,8 +67,8 @@ lark-cli auth login --recommend
 ### 2. 安装与初始化
 ```bash
 # 克隆仓库
-git clone https://github.com/KitchSupermonkey/context-wizard.git
-cd context-wizard
+git clone https://github.com/KitchSupermonkey/lark-autocontext.git
+cd lark-autocontext
 
 # 初始化多维表格 (自动创建 Base 并写入配置)
 python scripts/init_base.py
@@ -81,7 +81,7 @@ python scripts/init_base.py
 | 方式 | 示例 | 说明 |
 | :--- | :--- | :--- |
 | 💬 **自然语言** | "帮我存一下这个文档：https://feishu.cn/docx/..." | 发链接 + 保存意图，自动触发 |
-| 🔧 **斜杠命令** | `/context-wizard https://feishu.cn/docx/...` | 明确的指令入口 |
+| 🔧 **斜杠命令** | `/lark-autocontext https://feishu.cn/docx/...` | 明确的指令入口 |
 | 🔍 **提问检索** | "我们关于优惠券做了什么决策？" | 自动跨表搜索 + 时间线回答 |
 
 ---
