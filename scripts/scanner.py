@@ -35,6 +35,26 @@ def extract_sheet_token(url):
     return match.group(1) if match else "N/A"
 
 
+def clean_feishu_content(raw: str) -> str:
+    """Clean Feishu private tags and normalize whitespace.
+
+    - <title>X</title> → # X
+    - <callout ...>X</callout> → X
+    - <image .../> → removed entirely
+    - <details ...>X</details> → X
+    - 3+ blank lines → 1 blank line
+    """
+    if not raw:
+        return raw
+    raw = re.sub(r'<title>(.*?)</title>', r'# \1', raw, flags=re.DOTALL)
+    raw = re.sub(r'<image[^>]*/>', '', raw)
+    raw = re.sub(r'<image[^>]*>.*?</image>', '', raw, flags=re.DOTALL)
+    raw = re.sub(r'<callout[^>]*>(.*?)</callout>', r'\1', raw, flags=re.DOTALL)
+    raw = re.sub(r'<details[^>]*>(.*?)</details>', r'\1', raw, flags=re.DOTALL)
+    raw = re.sub(r'\n{3,}', '\n\n', raw)
+    return raw.strip()
+
+
 def scan_single_doc(url, cli=None):
     """Extract content from a single Feishu document URL."""
     if cli is None:
@@ -44,6 +64,7 @@ def scan_single_doc(url, cli=None):
         if is_feishu_doc(url):
             doc_token = extract_doc_token(url)
             content = cli.fetch_doc(doc_token)
+            content = clean_feishu_content(content)
             title = cli.fetch_doc_title(doc_token)
             return {
                 "source_type": "doc",
@@ -117,6 +138,7 @@ def scan_batch(config_path=None, cli=None):
                     if node_type == "docx" and node_token:
                         try:
                             content = cli.fetch_doc(node_token)
+                            content = clean_feishu_content(content)
                             documents.append({
                                 "source_type": "doc",
                                 "doc_token": node_token,
@@ -133,18 +155,36 @@ def scan_batch(config_path=None, cli=None):
             elif source_type == "folder":
                 files = cli.fetch_folder_files(token)
                 for f_info in files:
-                    file_type = f_info.get("type", "")
+                    file_type = f_info.get("type", "").upper()
                     file_token = f_info.get("token", "")
                     file_name = f_info.get("name", file_token)
+                    file_url = f_info.get("url", f"https://feishu.cn/docx/{file_token}")
 
-                    if file_type == "docx" and file_token:
+                    if file_type == "DOCX" and file_token:
                         try:
                             content = cli.fetch_doc(file_token)
+                            content = clean_feishu_content(content)
                             documents.append({
                                 "source_type": "doc",
                                 "doc_token": file_token,
                                 "title": file_name,
-                                "url": f"https://feishu.cn/docx/{file_token}",
+                                "url": file_url,
+                                "content": content,
+                                "source_name": name,
+                                "fetched_at": datetime.now().isoformat(),
+                                "last_modified": f_info.get("modified_time", "")
+                            })
+                        except Exception as e:
+                            errors.append({"token": file_token, "error": str(e)})
+
+                    elif file_type == "SHEET" and file_token:
+                        try:
+                            content = cli.fetch_sheet(file_token, "0")
+                            documents.append({
+                                "source_type": "sheet",
+                                "doc_token": file_token,
+                                "title": file_name,
+                                "url": file_url,
                                 "content": content,
                                 "source_name": name,
                                 "fetched_at": datetime.now().isoformat(),
