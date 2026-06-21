@@ -69,6 +69,38 @@ def sanitize_filename(name):
     return re.sub(r'[<>:"/\\|?*]', '_', name)
 
 
+def generate_mentions(classified):
+    """Build the `mentions` frontmatter array from classified_json."""
+    mentions = []
+    for person in classified.get("people") or []:
+        if person:
+            mentions.append(f"/people/{person}.md")
+    for concept in classified.get("concepts") or []:
+        if concept:
+            mentions.append(f"/concepts/{concept}.md")
+    project = classified.get("project")
+    if project:
+        mentions.append(f"/projects/{project}/index.md")
+    return mentions
+
+
+def generate_related_section(classified):
+    """Build the '# Related' markdown section using absolute paths."""
+    lines = ["# Related", ""]
+    people = [p for p in (classified.get("people") or []) if p]
+    concepts = [c for c in (classified.get("concepts") or []) if c]
+    project = classified.get("project")
+    if people:
+        links = ", ".join(f"[{p}](/people/{p}.md)" for p in people)
+        lines.append(f"* People: {links}")
+    if concepts:
+        links = ", ".join(f"[{c}](/concepts/{c}.md)" for c in concepts)
+        lines.append(f"* Concepts: {links}")
+    if project:
+        lines.append(f"* Project: [{project}](/projects/{project}/index.md)")
+    return "\n".join(lines)
+
+
 def generate_frontmatter(data):
     """Generate YAML frontmatter from classified data."""
     lines = ["---"]
