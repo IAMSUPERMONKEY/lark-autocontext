@@ -141,13 +141,64 @@ class LarkCLI:
             return []
 
     def fetch_folder_files(self, folder_token):
-        """Search files in a Feishu folder. Returns list of file dicts."""
+        """Search files in a Feishu folder. Returns list of normalized file dicts."""
         output = self.run(["drive", "+search", "--folder-tokens", folder_token], as_json=False)
         try:
             data = json.loads(output)
-            return data.get("data", {}).get("files", [])
+            results = data.get("data", {}).get("results", [])
+            files = []
+            for r in results:
+                meta = r.get("result_meta", {})
+                files.append({
+                    "type": meta.get("doc_types", ""),
+                    "token": meta.get("token", ""),
+                    "name": r.get("title_highlighted", meta.get("token", "")),
+                    "url": meta.get("url", ""),
+                    "modified_time": meta.get("update_time_iso", ""),
+                })
+            return files
         except:
             return []
+
+    def fetch_folder_files_since(self, folder_token, since):
+        """Search files edited since `since` in the folder."""
+        args = ["drive", "+search", "--folder-tokens", folder_token,
+                "--edited-since", since, "--page-all"]
+        output = self.run(args, as_json=False)
+        try:
+            data = json.loads(output)
+            return data.get("data", {}).get("files", [])
+        except Exception:
+            return []
+
+    def fetch_wiki_changed_since(self, space_id, since):
+        """Fetch wiki nodes whose underlying docs changed since `since`."""
+        nodes = self.fetch_wiki_tree(space_id)
+        changed = []
+        for n in nodes:
+            edit_time = n.get("obj_edit_time") or n.get("edit_time", "")
+            if edit_time and edit_time >= since:
+                changed.append({
+                    "token": n.get("obj_token", ""),
+                    "url": f"https://feishu.cn/wiki/{n.get('node_token', '')}",
+                    "name": n.get("title", ""),
+                    "edit_time": edit_time,
+                })
+        return changed
+
+    def fetch_doc_metadata(self, doc_token):
+        """Fetch doc metadata (title, edited_time, etc.)."""
+        output = self.run(["docs", "+fetch", "--doc", doc_token,
+                           "--doc-format", "markdown"], as_json=False)
+        try:
+            data = json.loads(output)
+            doc = data.get("data", {}).get("document", {})
+            return {
+                "title": doc.get("title", doc_token),
+                "edited_time": doc.get("revision_id_iso") or doc.get("updated_time") or "",
+            }
+        except Exception:
+            return {"title": doc_token, "edited_time": ""}
 
     def fetch_doc_title(self, doc_token):
         """Fetch just the title of a doc. Returns title string."""

@@ -55,6 +55,48 @@ def clean_feishu_content(raw: str) -> str:
     return raw.strip()
 
 
+def _normalize_changed_entry(raw, source_key):
+    """Normalize a raw Feishu file/doc dict into the changed-entry shape."""
+    doc_token = raw.get("token") or raw.get("obj_token") or raw.get("doc_token", "")
+    url = raw.get("url") or f"https://feishu.cn/docx/{doc_token}"
+    title = raw.get("name") or raw.get("title") or doc_token
+    edited_time = raw.get("edit_time") or raw.get("edited_time") or raw.get("modified_time", "")
+    return {
+        "doc_token": doc_token,
+        "url": url,
+        "title": title,
+        "edited_time": edited_time,
+        "source": source_key,
+    }
+
+
+def list_changed(sources, since):
+    """List documents that changed across all configured sources since `since`."""
+    cli = LarkCLI()
+    changed = []
+    source_results = {}
+    for src in sources:
+        src_type = src.get("type")
+        token = src.get("token", "")
+        source_key = f"{src_type}:{token}"
+        try:
+            if src_type == "folder":
+                files = cli.fetch_folder_files_since(token, since)
+            elif src_type == "wiki":
+                files = cli.fetch_wiki_changed_since(token, since)
+            elif src_type == "bitable":
+                files = [{"token": token, "name": src.get("name", token),
+                          "edit_time": since}]
+            else:
+                files = []
+            for f in files:
+                changed.append(_normalize_changed_entry(f, source_key))
+            source_results[source_key] = {"ok": True, "error": None}
+        except Exception as e:
+            source_results[source_key] = {"ok": False, "error": str(e)}
+    return {"changed": changed, "source_results": source_results}
+
+
 def scan_single_doc(url, cli=None):
     """Extract content from a single Feishu document URL."""
     if cli is None:
@@ -73,7 +115,7 @@ def scan_single_doc(url, cli=None):
                 "url": url,
                 "content": content,
                 "fetched_at": datetime.now().isoformat(),
-                "last_modified": datetime.now().isoformat()
+                "last_modified": cli.fetch_doc_metadata(doc_token).get("edited_time") or datetime.now().isoformat()
             }
         elif is_feishu_sheet(url):
             sheet_token = extract_sheet_token(url)
@@ -245,21 +287,32 @@ def scan_batch(config_path=None, cli=None):
 
 
 def main():
-    if len(sys.argv) < 2:
-        # Batch mode
-        result = scan_batch()
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-    elif sys.argv[1] == "--doc":
-        if len(sys.argv) < 3:
-            print("Usage: python scanner.py --doc <feishu_url>")
+    import argparse
+    parser = argparse.ArgumentParser(description="Feishu document scanner")
+    parser.add_argument('--doc', help='Scan a single Feishu document URL')
+    parser.add_argument('--list-changed', action='store_true',
+                        help='List changed documents since --since')
+    parser.add_argument('--since', help='ISO 8601 timestamp for incremental scan')
+    args = parser.parse_args()
+
+    if args.list_changed:
+        config_path = os.path.join(os.path.dirname(__file__), "scan_config.json")
+        if not os.path.exists(config_path):
+            print(json.dumps({"changed": [], "source_results": {},
+                              "error": "scan_config.json missing"}, ensure_ascii=False))
             sys.exit(1)
-        result = scan_single_doc(sys.argv[2])
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        sources = cfg.get("sources", [])
+        result = list_changed(sources, since=args.since or "2000-01-01T00:00:00+08:00")
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    elif args.doc:
+        result = scan_single_doc(args.doc)
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
-        print("Usage:")
-        print("  python scanner.py              # Batch scan from scan_config.json")
-        print("  python scanner.py --doc <url>  # Single document extraction")
-        sys.exit(1)
+        # Batch mode (default)
+        result = scan_batch()
+        print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
