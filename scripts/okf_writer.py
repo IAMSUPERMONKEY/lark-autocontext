@@ -129,35 +129,62 @@ def generate_frontmatter(data):
     return "\n".join(lines)
 
 
-def generate_body(data, raw_content=""):
-    """Generate Markdown body from classified data."""
+TYPES_WITH_DECISIONS = {"Meeting Minutes", "Review Report"}
+TYPES_WITH_ACTION_ITEMS = {"Meeting Minutes", "Requirement Doc"}
+
+
+def generate_body(classified, raw_content):
+    """Build the OKF-structured markdown body."""
     sections = []
 
-    if data.get('core_conclusion'):
-        sections.append("# 核心结论\n\n" + data['core_conclusion'])
+    summary = (classified.get("summary") or "").strip()
+    if summary:
+        sections.append(f"# Summary\n{summary}")
 
-    if data.get('key_dates'):
-        dates_lines = ["# 关键时间", ""]
-        for kd in data['key_dates']:
-            if isinstance(kd, dict):
-                dates_lines.append(f"- {kd.get('date', '')}: {kd.get('event', '')}")
-            else:
-                dates_lines.append(f"- {kd}")
-        sections.append("\n".join(dates_lines))
+    key_points = classified.get("key_points") or []
+    if key_points:
+        kp = ["# Key Points"] + [f"- {p}" for p in key_points if p]
+        sections.append("\n".join(kp))
 
-    if data.get('people'):
-        people_lines = ["# 涉及人员", ""]
-        for person in data['people']:
-            people_lines.append(f"- {person}")
-        sections.append("\n".join(people_lines))
+    doc_type = classified.get("type", "")
+    decisions = classified.get("decisions") or []
+    if decisions and doc_type in TYPES_WITH_DECISIONS:
+        dec = ["# Decisions"]
+        for d in decisions:
+            dec.append(
+                f"- **决策**: {d.get('decision', '')} "
+                f"**负责人**: {d.get('owner', '')} "
+                f"**截止**: {d.get('deadline', '')}"
+            )
+        sections.append("\n".join(dec))
+
+    action_items = classified.get("action_items") or []
+    if action_items and doc_type in TYPES_WITH_ACTION_ITEMS:
+        ai = ["# Action Items"]
+        for a in action_items:
+            owner = f" — @{a.get('owner', '')}" if a.get('owner') else ""
+            due = f" — {a.get('due', '')}" if a.get('due') else ""
+            ai.append(f"- [ ] {a.get('task', '')}{owner}{due}")
+        sections.append("\n".join(ai))
 
     if raw_content and raw_content.strip():
-        sections.append("# 原始内容\n\n" + raw_content)
+        sections.append(f"# Source Content\n{raw_content.strip()}")
 
-    if data.get('resource'):
-        sections.append("# Citations\n\n[1] [飞书原文文档](" + data['resource'] + ")")
+    has_entities = (
+        bool(classified.get("people") or [])
+        or bool(classified.get("concepts") or [])
+        or bool(classified.get("project"))
+    )
+    if has_entities:
+        sections.append(generate_related_section(classified))
 
-    return "\n\n".join(sections)
+    citations = ["# Citations"]
+    resource = classified.get("resource", "")
+    if resource:
+        citations.append(f"[1] [飞书原文]({resource})")
+    sections.append("\n".join(citations))
+
+    return "\n\n".join(sections) + "\n"
 
 
 def find_existing_file(bundle_path, resource):
