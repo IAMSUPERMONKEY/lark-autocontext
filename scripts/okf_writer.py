@@ -101,30 +101,62 @@ def generate_related_section(classified):
     return "\n".join(lines)
 
 
-def generate_frontmatter(data):
-    """Generate YAML frontmatter from classified data."""
-    lines = ["---"]
-    lines.append(f"type: {data.get('type', 'Other')}")
+def validate_description(desc):
+    """Validate description per OKF SHOULD: meaningful sentence, ≤100 chars."""
+    import re as _re
+    if not desc:
+        raise ValueError("description is required and must be non-empty")
+    desc = desc.strip()
+    if _re.match(r"^[A-Za-z][A-Za-z ]+ - .+$", desc):
+        raise ValueError(
+            f"description appears to be mechanical '{{type}} - {{title}}' pattern: {desc!r}. "
+            "Provide a meaningful one-sentence summary."
+        )
+    if len(desc) > 100:
+        desc = desc[:97] + "…"
+    return desc
 
-    title = data.get('title', 'Untitled')
-    lines.append(f'title: "{title}"')
 
-    if data.get('description'):
-        lines.append(f"description: {data['description']}")
-    if data.get('resource'):
-        lines.append(f"resource: {data['resource']}")
-    if data.get('tags'):
-        tags_str = ", ".join(data['tags'])
-        lines.append(f"tags: [{tags_str}]")
+def _now_iso():
+    from datetime import datetime
+    return datetime.now().astimezone().isoformat()
 
-    lines.append(f"timestamp: {datetime.now().isoformat()}")
 
-    if data.get('project'):
-        lines.append(f"project: {data['project']}")
-    if data.get('people'):
-        people_str = ", ".join(data['people'])
-        lines.append(f"people: [{people_str}]")
+def generate_frontmatter(classified):
+    """Build YAML frontmatter from classified_json."""
+    desc = validate_description(classified.get("description", ""))
+    tags = classified.get("tags") or []
+    people = classified.get("people") or []
+    concepts = classified.get("concepts") or []
+    timestamp = (
+        classified.get("edited_time")
+        or classified.get("timestamp")
+        or _now_iso()
+    )
+    mentions = generate_mentions(classified)
 
+    title = classified.get("title", "").replace('"', "'")
+    lines = [
+        "---",
+        f"type: {classified.get('type', 'Other')}",
+        f'title: "{title}"',
+        f"description: {desc}",
+    ]
+    if classified.get("resource"):
+        lines.append(f"resource: {classified['resource']}")
+    if tags:
+        lines.append(f"tags: [{', '.join(tags)}]")
+    lines.append(f"timestamp: {timestamp}")
+    if classified.get("project"):
+        lines.append(f"project: {classified['project']}")
+    if people:
+        lines.append(f"people: [{', '.join(people)}]")
+    if concepts:
+        lines.append(f"concepts: [{', '.join(concepts)}]")
+    if mentions:
+        lines.append("mentions:")
+        for m in mentions:
+            lines.append(f"  - {m}")
     lines.append("---")
     return "\n".join(lines)
 
