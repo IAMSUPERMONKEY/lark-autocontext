@@ -377,6 +377,29 @@ def find_existing_file(bundle_path, resource):
     return None
 
 
+def generate_directory_index(dir_path, heading=None):
+    """Generate an OKF-conformant index.md for a directory by reading
+    each child .md file's frontmatter description."""
+    if heading is None:
+        heading = os.path.basename(dir_path) or "Items"
+
+    entries = []
+    for name in sorted(os.listdir(dir_path)):
+        if not name.endswith(".md") or name in ("index.md", "log.md"):
+            continue
+        path = os.path.join(dir_path, name)
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+        title_match = re.search(r'^title:\s*"?([^"\n]+)"?\s*$', text, re.MULTILINE)
+        desc_match = re.search(r'^description:\s*(.+)$', text, re.MULTILINE)
+        title = title_match.group(1).strip() if title_match else name.replace(".md", "")
+        desc = desc_match.group(1).strip() if desc_match else ""
+        entries.append(f"* [{title}]({name}) - {desc}")
+
+    lines = [f"# {heading}", ""] + entries + [""]
+    return "\n".join(lines)
+
+
 def update_index_md(dir_path, title, filename, description):
     """Update or create index.md in a directory."""
     index_path = os.path.join(dir_path, "index.md")

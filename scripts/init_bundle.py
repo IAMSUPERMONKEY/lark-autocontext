@@ -39,8 +39,26 @@ def init_bundle(bundle_path=None):
         os.makedirs(d, exist_ok=True)
 
     # Create index.md files
+    root_index_content = '''---
+okf_version: "0.1"
+title: Lark AutoContext OKF Bundle
+description: 飞书业务上下文的 OKF 标准知识库
+---
+
+# Lark AutoContext OKF Bundle
+
+## Projects
+<!-- 自动填充 -->
+
+## People
+<!-- 自动填充 -->
+
+## Concepts
+<!-- 自动填充 -->
+'''
+
     index_files = {
-        os.path.join(bundle_path, "index.md"): "# Lark AutoContext OKF Bundle\n\n## Projects\n\n* [View all projects](projects/index.md)\n\n## Concepts\n\n* [View concepts](concepts/index.md)\n",
+        os.path.join(bundle_path, "index.md"): root_index_content,
         os.path.join(bundle_path, "projects", "index.md"): "# Projects\n\nNo projects yet. Run a scan or save a document to create one.\n",
         os.path.join(bundle_path, "concepts", "index.md"): "# Concepts\n\nNo concepts yet.\n",
         os.path.join(bundle_path, "people", "index.md"): "# People\n\nNo people yet.\n",
