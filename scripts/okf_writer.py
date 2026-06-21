@@ -161,6 +161,140 @@ def generate_frontmatter(classified):
     return "\n".join(lines)
 
 
+def _sanitize_entity_name(name):
+    """Strip filesystem-unsafe chars from entity name."""
+    return re.sub(r'[<>:"/\\|?*]', '', name).strip()
+
+
+def _parse_existing_mentions(text):
+    """Return raw lines under # Mentioned In until next H1."""
+    lines = text.splitlines()
+    in_section = False
+    out = []
+    for line in lines:
+        if line.startswith("# Mentioned In"):
+            in_section = True
+            continue
+        if in_section:
+            if line.startswith("# "):
+                break
+            if line.startswith("* ") or line.startswith("- "):
+                out.append(line)
+    return out
+
+
+def _extract_section(text, heading):
+    """Extract content under a specific H1 heading (exclusive of next H1)."""
+    lines = text.splitlines()
+    capture = False
+    captured = []
+    for line in lines:
+        if line.strip() == heading:
+            capture = True
+            continue
+        if capture and line.startswith("# "):
+            break
+        if capture:
+            captured.append(line)
+    return "\n".join(captured).strip()
+
+
+def _upsert_entity(bundle_path, entity_type, name, mentioned_concept_id,
+                   mentioned_title, mentioned_description, project, timestamp):
+    """Shared upsert logic for Person and Concept entities."""
+    if entity_type == "Person":
+        subdir = "people"
+        profile_heading = "# Profile"
+        desc_default = "在 lark-autocontext 知识库中出现的人物档案"
+    else:
+        subdir = "concepts"
+        profile_heading = "# Definition"
+        desc_default = "业务概念档案"
+
+    safe_name = _sanitize_entity_name(name)
+    if not safe_name:
+        return None
+
+    entity_dir = os.path.join(bundle_path, subdir)
+    os.makedirs(entity_dir, exist_ok=True)
+    entity_path = os.path.join(entity_dir, f"{safe_name}.md")
+
+    # Read existing
+    profile_content = ""
+    existing_mentions = []
+    existing_tags = set()
+    existing_timestamp = ""
+    if os.path.exists(entity_path):
+        with open(entity_path, "r", encoding="utf-8") as f:
+            existing_text = f.read()
+        profile_content = _extract_section(existing_text, profile_heading)
+        existing_mentions = _parse_existing_mentions(existing_text)
+        tag_match = re.search(r'tags:\s*\[(.*?)\]', existing_text)
+        if tag_match:
+            existing_tags = {t.strip() for t in tag_match.group(1).split(",") if t.strip()}
+        ts_match = re.search(r'timestamp:\s*(\S+)', existing_text)
+        if ts_match:
+            existing_timestamp = ts_match.group(1)
+
+    if project:
+        existing_tags.add(project)
+    if timestamp > existing_timestamp:
+        new_timestamp = timestamp
+    else:
+        new_timestamp = existing_timestamp or timestamp
+
+    # New mention line
+    new_mention_line = (
+        f"* [{mentioned_title}](/{mentioned_concept_id}.md) - {mentioned_description}"
+    )
+
+    # Dedupe by concept_id link
+    link_marker = f"](/{mentioned_concept_id}.md)"
+    deduped = [m for m in existing_mentions if link_marker not in m]
+    deduped.insert(0, new_mention_line)
+
+    # Build frontmatter
+    tags_str = ", ".join(sorted(existing_tags))
+    fm_lines = [
+        "---",
+        f"type: {entity_type}",
+        f"title: {name}",
+        f"description: {desc_default}",
+    ]
+    if tags_str:
+        fm_lines.append(f"tags: [{tags_str}]")
+    fm_lines.append(f"timestamp: {new_timestamp}")
+    fm_lines.append("---")
+
+    body_parts = [
+        "\n".join(fm_lines),
+        "",
+        profile_heading,
+        "",
+        profile_content if profile_content else "<!-- 占位区，供后续人工补充，脚本永不覆盖 -->",
+        "",
+        "# Mentioned In",
+        "",
+        "\n".join(deduped),
+        "",
+    ]
+    with open(entity_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(body_parts))
+    return entity_path
+
+
+def upsert_person(bundle_path, name, mentioned_concept_id, mentioned_title,
+                  mentioned_description, project, timestamp):
+    return _upsert_entity(bundle_path, "Person", name, mentioned_concept_id,
+                          mentioned_title, mentioned_description, project, timestamp)
+
+
+def upsert_concept(bundle_path, name, mentioned_concept_id, mentioned_title,
+                   mentioned_description, project, timestamp):
+    return _upsert_entity(bundle_path, "Concept", name, mentioned_concept_id,
+                          mentioned_title, mentioned_description, project, timestamp)
+
+
 TYPES_WITH_DECISIONS = {"Meeting Minutes", "Review Report"}
 TYPES_WITH_ACTION_ITEMS = {"Meeting Minutes", "Requirement Doc"}
 
@@ -348,6 +482,19 @@ def write_okf_document(classified_data, raw_content=""):
     # Write file
     with open(target_path, 'w', encoding='utf-8') as f:
         f.write(file_content)
+
+    # Auto-upsert entities (people / concepts)
+    concept_id_for_link = os.path.relpath(target_path, bundle_path).replace(os.sep, "/").replace(".md", "")
+    for person in classified_data.get("people") or []:
+        upsert_person(bundle_path, person, concept_id_for_link,
+                      classified_data.get("title", ""), classified_data.get("description", ""),
+                      classified_data.get("project", ""),
+                      classified_data.get("edited_time") or classified_data.get("timestamp", ""))
+    for concept_name in classified_data.get("concepts") or []:
+        upsert_concept(bundle_path, concept_name, concept_id_for_link,
+                       classified_data.get("title", ""), classified_data.get("description", ""),
+                       classified_data.get("project", ""),
+                       classified_data.get("edited_time") or classified_data.get("timestamp", ""))
 
     # Update index.md in the category directory
     target_dir = os.path.dirname(target_path)
