@@ -9,6 +9,26 @@ description: |
 
 # Lark AutoContext (OKF Architecture)
 
+## Pre-flight Check (每次执行前必检)
+
+**Before running ANY workflow (A/B/C/D), always check lark-cli availability first:**
+
+1. **Check lark-cli installed:** Run `lark-cli --version` in terminal.
+   - If command not found → Tell user: "需要先安装 lark-cli：`npm install -g @larksuiteoapi/lark-cli`"
+   - Do NOT proceed until installed.
+
+2. **Check lark-cli logged in:** Run `lark-cli auth status`.
+   - If not logged in → Tell user: "需要先登录飞书：`lark-cli auth login --recommend --no-wait`，然后在浏览器完成授权"
+   - Do NOT proceed until authenticated.
+
+3. **Check config.json exists:** Verify `scripts/config.json` exists.
+   - If missing → Guide user to copy from `config.json.example` and fill in tokens.
+
+4. **Check bundle initialized:** Verify `bundle/index.md` exists.
+   - If missing → Run `python scripts/init_bundle.py` first.
+
+Only after ALL 4 checks pass, proceed to the requested workflow.
+
 ## 🎯 Quick Start (首次使用引导)
 
 **When this skill is triggered for the first time** (config.json missing or bundle not initialized):
