@@ -163,11 +163,22 @@ class LarkCLI:
     def fetch_folder_files_since(self, folder_token, since):
         """Search files edited since `since` in the folder."""
         args = ["drive", "+search", "--folder-tokens", folder_token,
-                "--edited-since", since, "--page-all"]
+                "--edited-since", since]
         output = self.run(args, as_json=False)
         try:
             data = json.loads(output)
-            return data.get("data", {}).get("files", [])
+            results = data.get("data", {}).get("results", [])
+            files = []
+            for r in results:
+                meta = r.get("result_meta", {})
+                files.append({
+                    "type": meta.get("doc_types", ""),
+                    "token": meta.get("token", ""),
+                    "name": r.get("title_highlighted", meta.get("token", "")),
+                    "url": meta.get("url", ""),
+                    "edit_time": meta.get("update_time_iso", ""),
+                })
+            return files
         except Exception:
             return []
 
@@ -187,18 +198,32 @@ class LarkCLI:
         return changed
 
     def fetch_doc_metadata(self, doc_token):
-        """Fetch doc metadata (title, edited_time, etc.)."""
-        output = self.run(["docs", "+fetch", "--doc", doc_token,
-                           "--doc-format", "markdown"], as_json=False)
+        """Fetch doc metadata (title, edited_time, etc.) via drive +inspect."""
+        # Get title from drive +inspect
+        title = doc_token
         try:
+            output = self.run(["drive", "+inspect", "--url", doc_token,
+                               "--type", "docx"], as_json=False)
+            data = json.loads(output)
+            title = data.get("title", doc_token)
+        except Exception:
+            pass
+
+        # Try to get edited_time from docs +fetch (best-effort)
+        edited_time = ""
+        try:
+            output = self.run(["docs", "+fetch", "--doc", doc_token,
+                               "--doc-format", "markdown", "--detail", "full"], as_json=False)
             data = json.loads(output)
             doc = data.get("data", {}).get("document", {})
-            return {
-                "title": doc.get("title", doc_token),
-                "edited_time": doc.get("revision_id_iso") or doc.get("updated_time") or "",
-            }
+            edited_time = (doc.get("last_modified_time_iso")
+                           or doc.get("updated_time")
+                           or doc.get("revision_id_iso")
+                           or "")
         except Exception:
-            return {"title": doc_token, "edited_time": ""}
+            pass
+
+        return {"title": title, "edited_time": edited_time}
 
     def fetch_doc_title(self, doc_token):
         """Fetch just the title of a doc. Returns title string."""
