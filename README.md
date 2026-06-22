@@ -1,28 +1,42 @@
 # Lark AutoContext
 
-> 把飞书（Lark）文档自动转成 [OKF (Open Knowledge Format)](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) 标准的项目知识 bundle，供 AI Agent 长期上下文使用。
+> 让 AI Agent 记住你的业务上下文——飞书文档自动归档为可查询的知识库。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## Why lark-autocontext?
+## 它能做什么？
 
-团队的业务知识散落在飞书文档、会议纪要、需求文档里，Agent 每次对话都从零开始——不知道项目背景、不知道历史决策、不知道谁负责什么。
+**场景：** 你团队的需求文档、会议纪要、复盘报告都在飞书里。每次让 AI 帮忙干活，它都不记得上周讨论过什么、上个月做了什么决策、谁负责哪块——每次都得重新解释一遍。
 
-OKF（Open Knowledge Format）用纯 Markdown + YAML frontmatter 表示知识，天然具备几个关键属性：
+**装了这个之后：**
 
-- **人和 Agent 都能直接读。** 不需要 SDK 或查询语言，`cat` 一下就能看，LLM 可以原样注入上下文。
-- **天然版本控制。** Bundle 在 git 里，PR、diff、blame、review 全部开箱即用——知识管理变成正常的软件工程活动。
-- **无锁定。** 一个目录就是全部，打包、托管、同步到任何文件系统，没有私有 API 挡在你和数据之间。
-- **结构化与非结构化混存。** frontmatter 放你要查询/过滤的字段（`type`、`tags`、`timestamp`），markdown body 放 LLM 和人真正要读的内容。
-- **与现有工具无缝衔接。** Obsidian、Notion、MkDocs、Hugo 都原生支持 markdown + YAML frontmatter。
+```
+你：保存这个文档 https://feishu.cn/docx/xxx
+Agent：✅ 已保存到 bundle/项目/需求/xxx.md
 
-**lark-autocontext 做的事：** 把飞书这个数据源接入 OKF 生态——自动提取、AI 分类、生成 OKF 合规文档、增量同步、交叉链接、可视化。所有操作均需用户主动触发且仅访问用户配置的数据源。
+你：扫描飞书文档
+Agent：✅ 发现 12 篇，已分类归档
 
-**核心方程：** AI 的产出 = 模型能力 × Agent 框架 × 上下文质量
+你：我们项目里关于支付改版做了哪些决策？
+Agent：查到了 3 条相关记录，汇总如下...
+```
 
-## Agent-First: 一行安装，即装即用
+**一句话：** 把飞书变成 AI 的长期记忆。Agent 每次对话自带上下文，不用你重复解释。
 
-**给 Agent 这个 GitHub 地址，让它自己装：**
+所有操作均需用户主动触发，仅访问你配置的飞书数据源。
+
+## Why OKF?
+
+底层采用 Google 开源的 [OKF (Open Knowledge Format)](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)——纯 Markdown + YAML frontmatter 的知识标准：
+
+- **人可直接读，Agent 可直接注入上下文。** 不需要 SDK，`cat` 就能看。
+- **Git 版本控制。** diff、blame、PR review 全部开箱即用。
+- **无平台锁定。** 一个目录就是全部知识库，随时迁移。
+- **与 Obsidian / Notion / MkDocs 等工具原生兼容。**
+
+## Agent-First: 即装即用
+
+**把 GitHub 地址发给 Agent，让它自己装：**
 
 ```
 https://github.com/KitchSupermonkey/lark-autocontext
