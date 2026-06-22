@@ -71,10 +71,16 @@ def _resolve_link(bundle_dir, src_id, link):
 def scan_bundle_to_graph(bundle_dir):
     """Scan bundle directory, return {nodes, edges}.
     Skips index.md / log.md (directory indices and changelog, not knowledge nodes).
+
+    Edges:
+      - "explicit": frontmatter `mentions` + body markdown links
+      - "tag": derived from shared tags (weak, dashed in UI)
+      - "type": derived from same type (very weak, only when no other edges exist
+                between the pair, to avoid dense clutter)
     """
     nodes = []
-    edges = []
-    seen_edges = set()
+    explicit_edges = []
+    seen_explicit = set()
 
     for md_path in Path(bundle_dir).rglob("*.md"):
         if md_path.name in SKIP_FILENAMES:
@@ -99,13 +105,11 @@ def scan_bundle_to_graph(bundle_dir):
         })
 
         targets = set()
-        # From mentions frontmatter
         mentions = fm.get("mentions", [])
         if isinstance(mentions, list):
             for ref in mentions:
                 if ref:
                     targets.add(ref.lstrip("/"))
-        # From body links
         for link in extract_links(body):
             r = _resolve_link(bundle_dir, nid, link)
             if r and Path(r).name not in SKIP_FILENAMES:
@@ -113,12 +117,73 @@ def scan_bundle_to_graph(bundle_dir):
 
         for t in targets:
             key = (nid, t)
-            if key in seen_edges:
+            if key in seen_explicit:
                 continue
-            seen_edges.add(key)
-            edges.append({"source": nid, "target": t})
+            seen_explicit.add(key)
+            explicit_edges.append({"source": nid, "target": t, "kind": "explicit"})
 
-    return {"nodes": nodes, "edges": edges}
+    derived_edges = _derive_implicit_edges(nodes, seen_explicit)
+    return {"nodes": nodes, "edges": explicit_edges + derived_edges}
+
+
+def _derive_implicit_edges(nodes, seen_explicit):
+    """Derive weak edges from shared tags / same type so a sparse bundle
+    still has visual structure.
+
+    Strategy:
+      1. For each tag, connect all node pairs sharing it as `kind=tag`.
+      2. For each type, if two nodes have NO explicit/tag edge between them,
+         add a `kind=type` edge — but cap per-type to avoid O(N^2) clutter.
+    Both source and target are stored undirected (we emit a single direction
+    deterministically: the lexicographically smaller id first).
+    """
+    derived = []
+    seen_pair = set()
+
+    def _pair_key(a, b):
+        return (a, b) if a < b else (b, a)
+
+    for a, b in seen_explicit:
+        seen_pair.add(_pair_key(a, b))
+
+    # Tag-based edges
+    tag_to_nodes = {}
+    for n in nodes:
+        for tag in n.get("tags", []) or []:
+            tag_to_nodes.setdefault(tag, []).append(n["id"])
+
+    for tag, ids in tag_to_nodes.items():
+        if len(ids) < 2:
+            continue
+        ids = sorted(ids)
+        for i in range(len(ids)):
+            for j in range(i + 1, len(ids)):
+                key = _pair_key(ids[i], ids[j])
+                if key in seen_pair:
+                    continue
+                seen_pair.add(key)
+                derived.append({"source": ids[i], "target": ids[j],
+                                "kind": "tag", "tag": tag})
+
+    # Type-based edges (only if a type has 2-6 nodes; cap to a chain to avoid clutter)
+    type_to_nodes = {}
+    for n in nodes:
+        type_to_nodes.setdefault(n["type"], []).append(n["id"])
+
+    for ntype, ids in type_to_nodes.items():
+        if len(ids) < 2 or len(ids) > 6:
+            continue
+        ids = sorted(ids)
+        # Chain-link (i -> i+1) so we get a backbone, not a clique
+        for i in range(len(ids) - 1):
+            key = _pair_key(ids[i], ids[i + 1])
+            if key in seen_pair:
+                continue
+            seen_pair.add(key)
+            derived.append({"source": ids[i], "target": ids[i + 1],
+                            "kind": "type", "tag": ntype})
+
+    return derived
 
 
 def compute_cited_by(graph):
@@ -202,27 +267,45 @@ const elements = [
   ...DATA.nodes.map(n => ({data:{
     id:n.id, label:n.label, type:n.type,
     color: COLORS[n.type] || COLORS.doc,
-    size: (SIZES[n.type] || 35) + Math.min((degree[n.id]||0) * 3, 20),
+    size: (SIZES[n.type] || 38) + Math.min((degree[n.id]||0) * 3, 20),
   }})),
-  ...DATA.edges.map(e => ({data:{source:e.source, target:e.target}})),
+  ...DATA.edges.map(e => ({data:{
+    source:e.source, target:e.target,
+    kind: e.kind || "explicit",
+    tag: e.tag || "",
+  }})),
 ];
 
-const layoutName = (typeof cytoscape !== "undefined" && cytoscape("layout","cose-bilkent"))
-  ? "cose-bilkent" : "cose";
+const hasBilkent = (typeof cytoscape !== "undefined") &&
+                   cytoscape.prototype && cytoscape("layout","cose-bilkent");
+// cose-bilkent params tuned for sparse Chinese-label bundles:
+// large nodeRepulsion + idealEdgeLength prevents label collision.
+const layoutCfg = hasBilkent
+  ? {name:"cose-bilkent", animate:false, randomize:true,
+     idealEdgeLength:180, nodeRepulsion:24000, edgeElasticity:0.45,
+     gravity:0.25, numIter:3000, tile:true, padding:60}
+  : {name:"cose", animate:false, randomize:true,
+     idealEdgeLength:200, nodeRepulsion:()=>32000,
+     nodeOverlap:60, padding:60, gravity:40, numIter:2500};
 
 const cy = cytoscape({
   container: document.getElementById("cy"),
   elements,
-  layout: {name: layoutName, animate:false, idealEdgeLength:120,
-           nodeRepulsion:8000, nodeOverlap:20, randomize:false},
+  layout: layoutCfg,
+  wheelSensitivity: 0.2,
   style:[
     {selector:"node", style:{
       "background-color":"data(color)",
       "label":"data(label)",
-      "font-size":11, "font-weight":500,
-      "text-wrap":"wrap", "text-max-width":90,
-      "text-valign":"bottom", "text-margin-y":4,
+      "font-size":12, "font-weight":500,
+      "text-wrap":"wrap", "text-max-width":110,
+      "text-valign":"center", "text-halign":"right",
+      "text-margin-x":6,
       "color":"#222",
+      "text-background-color":"#fff",
+      "text-background-opacity":0.85,
+      "text-background-padding":2,
+      "text-background-shape":"roundrectangle",
       "width":"data(size)", "height":"data(size)",
       "border-width":2, "border-color":"#fff",
     }},
@@ -230,10 +313,20 @@ const cy = cytoscape({
       "border-color":"#0969da", "border-width":3,
     }},
     {selector:"edge", style:{
-      "width":1.2, "line-color":"#cbd5e0",
-      "target-arrow-color":"#cbd5e0",
+      "width":1.4, "line-color":"#94a3b8",
+      "target-arrow-color":"#94a3b8",
       "target-arrow-shape":"triangle",
       "curve-style":"bezier", "arrow-scale":0.8,
+    }},
+    {selector:'edge[kind = "tag"]', style:{
+      "line-style":"dashed", "line-color":"#cbd5e0",
+      "target-arrow-shape":"none",
+      "width":1, "opacity":0.6,
+    }},
+    {selector:'edge[kind = "type"]', style:{
+      "line-style":"dotted", "line-color":"#e2e8f0",
+      "target-arrow-shape":"none",
+      "width":1, "opacity":0.5,
     }},
     {selector:".faded", style:{"opacity":0.12}},
     {selector:"edge.faded", style:{"opacity":0.05}},
@@ -251,7 +344,11 @@ const typeFilter = document.getElementById("type-filter");
   typeFilter.appendChild(opt);
 });
 document.getElementById("stats").textContent =
-  `${DATA.nodes.length} 节点 · ${DATA.edges.length} 边 · ${typeSet.size} 类型`;
+  `${DATA.nodes.length} 节点 · ${DATA.edges.length} 边` +
+  (DATA.edges.some(e=>e.kind && e.kind!=="explicit")
+    ? `（含 ${DATA.edges.filter(e=>e.kind && e.kind!=="explicit").length} 条隐式：虚线=同 tag，点线=同 type）`
+    : "") +
+  ` · ${typeSet.size} 类型`;
 
 function escapeHtml(s){
   return String(s).replace(/[&<>"']/g, c =>
