@@ -1,38 +1,48 @@
 # Lark AutoContext
 
-> 让 AI Agent 记住你的业务上下文——飞书文档自动归档为可查询的知识库。
+> 自动把飞书文档变成 Agent 能直接用的上下文——散落文档自动整理、增量同步、结构化存储。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## 它能做什么？
 
-**场景：** 你团队的需求文档、会议纪要、复盘报告都在飞书里。每次让 AI 帮忙干活，它都不记得上周讨论过什么、上个月做了什么决策、谁负责哪块——每次都得重新解释一遍。
+**场景：**
+
+你负责多个项目/业务，想让 Agent 帮你干活——
+
+1. **文档散落**：需求、会议、复盘散在飞书各处（知识库、文件夹、Wiki、表格），找起来费劲
+2. **信息量大**：即便找到了，Agent 要一篇篇读、自己组织上下文、分析关系，效率低
+3. **有过时信息**：历史文档里可能混着过期结论，Agent 无法自行判断
+4. **反复劳动**：半个月后业务变化，又要重新整理、补充新上下文
 
 **装了这个之后：**
 
 ```
-你：保存这个文档 https://feishu.cn/docx/xxx
-Agent：✅ 已保存到 bundle/项目/需求/xxx.md
+你：扫描飞书文档（指定项目文件夹）
+Agent：✅ 发现 12 篇变更，已按 项目/人物/概念 自动分类归档
 
-你：扫描飞书文档
-Agent：✅ 发现 12 篇，已分类归档
+你：半个月后，业务有更新
+Agent：✅ 增量同步 3 篇新文档，自动更新上下文
 
-你：我们项目里关于支付改版做了哪些决策？
-Agent：查到了 3 条相关记录，汇总如下...
+你：把整个 bundle 可视化看看
+Agent：✅ 已生成 viz.html，浏览器打开可看到文档关系图
 ```
 
-**一句话：** 把飞书变成 AI 的长期记忆。Agent 每次对话自带上下文，不用你重复解释。
+**一句话：** 飞书散落文档 → 结构化上下文，自动分类、增量同步、Agent 直接读。
 
 所有操作均需用户主动触发，仅访问你配置的飞书数据源。
 
-## Why OKF?
+## 底层格式
 
-底层采用 Google 开源的 [OKF (Open Knowledge Format)](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)——纯 Markdown + YAML frontmatter 的知识标准：
+输出是纯 Markdown + YAML frontmatter，人可读、Git 可管、工具可解析：
 
-- **人可直接读，Agent 可直接注入上下文。** 不需要 SDK，`cat` 就能看。
+- **人可直接读。** 不需要 SDK，`cat` / Obsidian / VSCode 直接看。
 - **Git 版本控制。** diff、blame、PR review 全部开箱即用。
-- **无平台锁定。** 一个目录就是全部知识库，随时迁移。
+- **无平台锁定。** 一个目录就是全部上下文，随时迁移、备份、二次加工。
 - **与 Obsidian / Notion / MkDocs 等工具原生兼容。**
+- **任何 Agent / RAG / LLM 都能直接消费。** 标准 Markdown，无需特殊适配。
+
+底层采用 [OKF (Open Knowledge Format)](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) 标准。
 
 ## Agent-First: 即装即用
 
