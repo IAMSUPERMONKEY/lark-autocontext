@@ -171,15 +171,15 @@ Based on the audit against [OKF SPEC.md](https://github.com/GoogleCloudPlatform/
 ```yaml
 ---
 type: Meeting Minutes
-project: supermonkey-xuanzhen
-people: [刻奇, 张三]
-concepts: [超猩甄选, 门店数据]
+project: demo-project
+people: [Alice, 张三]
+concepts: [示例项目, 核心指标]
 mentions:                              # 🆕 自动生成的绝对路径链接列表
-  - /people/刻奇.md
+  - /people/Alice.md
   - /people/张三.md
-  - /concepts/超猩甄选.md
-  - /concepts/门店数据.md
-  - /projects/supermonkey-xuanzhen/index.md
+  - /concepts/示例项目.md
+  - /concepts/核心指标.md
+  - /projects/demo-project/index.md
 ---
 ```
 
@@ -188,9 +188,9 @@ Body 末尾自动追加 `# Related` 段（使用 OKF 推荐的绝对路径）:
 ```markdown
 # Related
 
-* People: [刻奇](/people/刻奇.md), [张三](/people/张三.md)
-* Concepts: [超猩甄选](/concepts/超猩甄选.md), [门店数据](/concepts/门店数据.md)
-* Project: [supermonkey-xuanzhen](/projects/supermonkey-xuanzhen/index.md)
+* People: [Alice](/people/Alice.md), [张三](/people/张三.md)
+* Concepts: [示例项目](/concepts/示例项目.md), [核心指标](/concepts/核心指标.md)
+* Project: [demo-project](/projects/demo-project/index.md)
 ```
 
 **Implementation**: `okf_writer.py` 收到 `classified_json` 后，根据 `people / concepts / project` 字段自动生成 `mentions` 数组和 `# Related` 段。
@@ -248,7 +248,7 @@ Body 末尾自动追加 `# Related` 段（使用 OKF 推荐的绝对路径）:
 
 ### 3.3 Core Gap #3: Meaningful Description (SPEC §4.1)
 
-**Problem**: 当前 `description: "Requirement Doc - 超猩甄选-战略规划讨论-刻奇"` 是机械字符串，违反 OKF "single sentence summarizing the concept" 要求。
+**Problem**: 当前 `description: "Requirement Doc - 示例项目-战略规划讨论-Alice"` 是机械字符串，违反 OKF "single sentence summarizing the concept" 要求。
 
 **Solution**:
 
@@ -271,9 +271,9 @@ SKILL.md Classification Guide 加强约束:
 ```markdown
 ---
 type: Person
-title: 刻奇
+title: Alice
 description: 在 lark-autocontext 知识库中出现的人物档案
-tags: [supermonkey-xuanzhen]              # 累积出现过的 project
+tags: [demo-project]              # 累积出现过的 project
 timestamp: 2026-06-21T08:00:00+08:00       # 最近一次提及时间
 ---
 
@@ -283,8 +283,8 @@ timestamp: 2026-06-21T08:00:00+08:00       # 最近一次提及时间
 
 # Mentioned In
 
-* [2026-06-20 周会](/projects/supermonkey-xuanzhen/meetings/2026-06-20-周会.md) - 对齐 7 月聚焦门店数据
-* [战略规划讨论](/projects/supermonkey-xuanzhen/requirements/战略规划讨论.md) - 8 月战略方向确定
+* [2026-06-20 周会](/projects/demo-project/meetings/2026-06-20-周会.md) - 对齐 Q3 聚焦核心指标
+* [战略规划讨论](/projects/demo-project/requirements/战略规划讨论.md) - H2 战略方向确定
 ```
 
 **`concepts/{slug}.md` 结构**（业务概念档案）:
@@ -292,9 +292,9 @@ timestamp: 2026-06-21T08:00:00+08:00       # 最近一次提及时间
 ```markdown
 ---
 type: Concept
-title: 超猩甄选
+title: 示例项目
 description: 业务概念档案
-tags: [supermonkey-xuanzhen]
+tags: [demo-project]
 timestamp: ...
 ---
 
@@ -342,62 +342,62 @@ description: 飞书业务上下文的 OKF 标准知识库
 # Lark AutoContext OKF Bundle
 
 ## Projects
-* [supermonkey-xuanzhen](projects/supermonkey-xuanzhen/index.md) - 超猩甄选业务相关知识
+* [demo-project](projects/demo-project/index.md) - 示例项目业务相关知识
 
 ## People
-* [刻奇](people/刻奇.md) - 在 lark-autocontext 知识库中出现的人物档案
+* [Alice](people/Alice.md) - 在 lark-autocontext 知识库中出现的人物档案
 
 ## Concepts
-* [超猩甄选](concepts/超猩甄选.md) - 业务概念档案
+* [示例项目](concepts/示例项目.md) - 业务概念档案
 ```
 
 ### 3.6 完整示例
 
-`bundle/projects/supermonkey-xuanzhen/meetings/2026-06-20-周会.md`:
+`bundle/projects/demo-project/meetings/2026-06-20-周会.md`:
 
 ```markdown
 ---
 type: Meeting Minutes
-title: 2026-06-20 超猩甄选周会
-description: 对齐 7 月聚焦门店数据，刻奇确认 GMV 目标 200 万
-resource: https://supermonkey.feishu.cn/docx/XYZ
-tags: [周会, 6月, 门店数据]
+title: 2026-06-20 示例项目周会
+description: 对齐 Q3 聚焦核心指标，Alice确认 Q3 目标
+resource: https://feishu.cn/docx/EXAMPLE
+tags: [周会, 6月, 核心指标]
 timestamp: 2026-06-20T14:30:00+08:00
-project: supermonkey-xuanzhen
-people: [刻奇, 张三]
-concepts: [超猩甄选, 门店数据]
+project: demo-project
+people: [Alice, 张三]
+concepts: [示例项目, 核心指标]
 mentions:
-  - /people/刻奇.md
+  - /people/Alice.md
   - /people/张三.md
-  - /concepts/超猩甄选.md
-  - /concepts/门店数据.md
-  - /projects/supermonkey-xuanzhen/index.md
+  - /concepts/示例项目.md
+  - /concepts/核心指标.md
+  - /projects/demo-project/index.md
 ---
 
 # Summary
-2026-06-20 周会确认 7 月聚焦门店数据采集，刻奇承诺 GMV 目标 200 万。
+2026-06-20 周会确认 Q3 聚焦核心指标提升，Alice承诺 Q3 目标。
 
 # Key Points
 - 6 月 GMV 落地 150 万
-- 7 月转向门店数据 BI 建设
+- 7 月转向核心指标 BI 建设
 - 渠道侧暂缓投入
 
 # Decisions
-- **决策**: 7 月聚焦门店数据 BI **负责人**: 刻奇 **截止**: 2026-07-31
+- **决策**: Q3 聚焦核心指标 BI **负责人**: Alice **截止**: 2026-07-31
 
 # Action Items
-- [ ] 完成门店数据接口对齐 — @张三 — 2026-06-30
+- [ ] 完成核心指标接口对齐 — @张三 — 2026-06-30
 
 # Source Content
 （清洗后的飞书原文 ...）
 
 # Related
-* People: [刻奇](/people/刻奇.md), [张三](/people/张三.md)
-* Concepts: [超猩甄选](/concepts/超猩甄选.md), [门店数据](/concepts/门店数据.md)
-* Project: [supermonkey-xuanzhen](/projects/supermonkey-xuanzhen/index.md)
+* People: [Alice](/people/Alice.md), [张三](/people/张三.md)
+* Concepts: [示例项目](/concepts/示例项目.md), [核心指标](/concepts/核心指标.md)
+* Project: [demo-project](/projects/demo-project/index.md)
 
 # Citations
-[1] [飞书原文](https://supermonkey.feishu.cn/docx/XYZ)
+[1] [飞书原文](https://feishu.cn/docx/EXAMPLE)
 ```
 
 ---
@@ -439,9 +439,9 @@ mentions:
 │       O─┤2026-06-20│─O              │  type / title / desc     │
 │        └──────────┘                  │  tags / resource         │
 │             │                        │                          │
-│        ◇ 刻奇                        │  # Summary               │
+│        ◇ Alice                        │  # Summary               │
 │             │                        │  ...                     │
-│        ⬡ 超猩甄选                    │  # Key Points            │
+│        ⬡ 示例项目                    │  # Key Points            │
 │                                      │  • ...                   │
 │   (Cytoscape 力导向图)                │                          │
 │                                      │  📥 Cited by (3)         │
@@ -458,7 +458,7 @@ mentions:
 **详情面板**:
 - 上半: frontmatter 渲染（resource 可点击）
 - 中段: body markdown 渲染（marked.js）
-- body 里的 `/people/刻奇.md` 这种内部链接改写为面板内导航
+- body 里的 `/people/Alice.md` 这种内部链接改写为面板内导航
 - 下半: 自动计算的 "Cited by" 反向链接列表
 
 ### 4.4 Implementation
@@ -490,7 +490,7 @@ def render_html(graph_json: dict, output_path: str, name: str):
 
 **关键技术点**:
 - **markdown 预渲染**: 用 Python `markdown` 库在生成时预渲染 body（支持中文 + 避免浏览器端处理）
-- **跨链接重写**: HTML 里 `<a href="/people/刻奇.md">` 改成 `<a href="#" data-concept-id="people/刻奇" class="okf-internal-link">`，JS 拦截点击切换节点
+- **跨链接重写**: HTML 里 `<a href="/people/Alice.md">` 改成 `<a href="#" data-concept-id="people/Alice" class="okf-internal-link">`，JS 拦截点击切换节点
 - **时间轴模式**: Cytoscape 切换为 `preset` 布局，X 按 timestamp 线性映射，Y 按 type 分层
 
 ### 4.5 CLI Usage
@@ -542,7 +542,7 @@ if changed_count > 0:
 
 1. **okf_writer 用 `resource` 字段（飞书 doc_token）查找已有文件** → 存在则 Update，不存在则 Create
 2. **people / concepts 档案 upsert**:
-   - 文件名（slug）确定性（"刻奇" 总是映射到 `people/刻奇.md`）
+   - 文件名（slug）确定性（"Alice" 总是映射到 `people/Alice.md`）
    - `# Mentioned In` 列表去重（concept_id 作为唯一键）
    - `tags` 累积去重
    - **用户人工编辑的 `# Profile` / `# Definition` 段落永不被覆盖**
@@ -557,12 +557,12 @@ auto_sync.py 退出时输出（stdout，给 Agent 在定时上下文里看一眼
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Sources scanned: 3 (✅ 2 ok, ❌ 1 failed)
 Documents:
-  📥 New:     1 (超猩甄选 7月规划)
+  📥 New:     1 (示例项目 7月规划)
   🔄 Updated: 0
   ❌ Failed:  0
 Entities:
-  👤 People upserted:   2 (刻奇, 张三)
-  💡 Concepts upserted: 1 (门店数据)
+  👤 People upserted:   2 (Alice, 张三)
+  💡 Concepts upserted: 1 (核心指标)
 Git: ✅ committed 1ec3e91 + viz.html
 Visualizer: ✅ bundle/viz.html updated
 

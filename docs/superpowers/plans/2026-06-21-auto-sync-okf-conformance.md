@@ -89,10 +89,10 @@ def sample_classified_json():
         "description": "测试会议讨论 OKF 重构方案",
         "summary": "确定采用 Pipeline 架构。",
         "key_points": ["要点1", "要点2"],
-        "decisions": [{"decision": "采用 OKF", "owner": "刻奇", "deadline": "2026-07-01"}],
+        "decisions": [{"decision": "采用 OKF", "owner": "Alice", "deadline": "2026-07-01"}],
         "action_items": [{"task": "写实现", "owner": "张三", "due": "2026-06-30"}],
         "tags": ["测试", "OKF"],
-        "people": ["刻奇", "张三"],
+        "people": ["Alice", "张三"],
         "concepts": ["OKF", "Pipeline 架构"],
         "filename": "2026-06-01-测试会议.md",
         "resource": "https://feishu.cn/docx/TESTTOKEN",
@@ -429,11 +429,11 @@ def test_generate_mentions_includes_people_concepts_project():
     from okf_writer import generate_mentions
     classified = {
         "project": "demo",
-        "people": ["刻奇", "张三"],
+        "people": ["Alice", "张三"],
         "concepts": ["OKF", "Pipeline 架构"],
     }
     mentions = generate_mentions(classified)
-    assert "/people/刻奇.md" in mentions
+    assert "/people/Alice.md" in mentions
     assert "/people/张三.md" in mentions
     assert "/concepts/OKF.md" in mentions
     assert "/concepts/Pipeline 架构.md" in mentions
@@ -444,12 +444,12 @@ def test_generate_related_section_format():
     from okf_writer import generate_related_section
     classified = {
         "project": "demo",
-        "people": ["刻奇"],
+        "people": ["Alice"],
         "concepts": ["OKF"],
     }
     section = generate_related_section(classified)
     assert "# Related" in section
-    assert "[刻奇](/people/刻奇.md)" in section
+    assert "[Alice](/people/Alice.md)" in section
     assert "[OKF](/concepts/OKF.md)" in section
     assert "[demo](/projects/demo/index.md)" in section
 
@@ -561,20 +561,20 @@ def test_body_includes_decisions_for_meeting():
     from okf_writer import generate_body
     classified = {
         "type": "Meeting Minutes", "project": "demo", "summary": "S",
-        "decisions": [{"decision": "决策A", "owner": "刻奇", "deadline": "2026-07-01"}],
+        "decisions": [{"decision": "决策A", "owner": "Alice", "deadline": "2026-07-01"}],
         "resource": "https://feishu.cn/docx/X",
     }
     body = generate_body(classified, raw_content="X")
     assert "# Decisions" in body
     assert "决策A" in body
-    assert "刻奇" in body
+    assert "Alice" in body
 
 
 def test_body_skips_decisions_for_reference():
     from okf_writer import generate_body
     classified = {
         "type": "Reference", "project": "demo", "summary": "S",
-        "decisions": [{"decision": "决策A", "owner": "刻奇", "deadline": "2026-07-01"}],
+        "decisions": [{"decision": "决策A", "owner": "Alice", "deadline": "2026-07-01"}],
         "resource": "https://feishu.cn/docx/X",
     }
     body = generate_body(classified, raw_content="X")
@@ -598,11 +598,11 @@ def test_body_includes_related_when_entities_present():
     from okf_writer import generate_body
     classified = {
         "type": "Reference", "project": "demo", "summary": "S",
-        "people": ["刻奇"], "resource": "https://feishu.cn/docx/X",
+        "people": ["Alice"], "resource": "https://feishu.cn/docx/X",
     }
     body = generate_body(classified, raw_content="X")
     assert "# Related" in body
-    assert "[刻奇](/people/刻奇.md)" in body
+    assert "[Alice](/people/Alice.md)" in body
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -711,12 +711,12 @@ def test_frontmatter_includes_mentions():
     classified = {
         "project": "demo", "type": "Meeting Minutes", "title": "T",
         "description": "测试会议讨论核心议题", "tags": [],
-        "people": ["刻奇"], "concepts": ["OKF"],
+        "people": ["Alice"], "concepts": ["OKF"],
         "resource": "https://x", "edited_time": "2026-06-20T14:30:00+08:00",
     }
     fm = generate_frontmatter(classified)
     assert "mentions:" in fm
-    assert "/people/刻奇.md" in fm
+    assert "/people/Alice.md" in fm
     assert "/concepts/OKF.md" in fm
     assert "/projects/demo/index.md" in fm
 
@@ -861,18 +861,18 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 def test_upsert_creates_new_person_file(tmp_bundle):
     from okf_writer import upsert_person
     upsert_person(
-        str(tmp_bundle), name="刻奇",
+        str(tmp_bundle), name="Alice",
         mentioned_concept_id="projects/demo/meetings/2026-06-01-test",
         mentioned_title="2026-06-01 Test",
         mentioned_description="测试摘要",
         project="demo",
         timestamp="2026-06-01T14:30:00+08:00",
     )
-    p = tmp_bundle / "people" / "刻奇.md"
+    p = tmp_bundle / "people" / "Alice.md"
     assert p.exists()
     text = p.read_text(encoding="utf-8")
     assert "type: Person" in text
-    assert "title: 刻奇" in text
+    assert "title: Alice" in text
     assert "# Profile" in text
     assert "# Mentioned In" in text
     assert "[2026-06-01 Test]" in text
@@ -881,24 +881,24 @@ def test_upsert_creates_new_person_file(tmp_bundle):
 def test_upsert_preserves_profile_region(tmp_bundle):
     from okf_writer import upsert_person
     upsert_person(
-        str(tmp_bundle), name="刻奇",
+        str(tmp_bundle), name="Alice",
         mentioned_concept_id="projects/demo/meetings/A",
         mentioned_title="A", mentioned_description="A desc",
         project="demo", timestamp="2026-06-01T00:00:00+08:00",
     )
-    p = tmp_bundle / "people" / "刻奇.md"
+    p = tmp_bundle / "people" / "Alice.md"
     text = p.read_text(encoding="utf-8")
-    text = text.replace("# Profile\n", "# Profile\n刻奇是 lark-autocontext 的核心维护者。\n")
+    text = text.replace("# Profile\n", "# Profile\nAlice是 lark-autocontext 的核心维护者。\n")
     p.write_text(text, encoding="utf-8")
 
     upsert_person(
-        str(tmp_bundle), name="刻奇",
+        str(tmp_bundle), name="Alice",
         mentioned_concept_id="projects/demo/meetings/B",
         mentioned_title="B", mentioned_description="B desc",
         project="demo", timestamp="2026-06-02T00:00:00+08:00",
     )
     text = p.read_text(encoding="utf-8")
-    assert "刻奇是 lark-autocontext 的核心维护者。" in text
+    assert "Alice是 lark-autocontext 的核心维护者。" in text
     assert "[B]" in text
     assert "[A]" in text
 
@@ -907,12 +907,12 @@ def test_upsert_idempotent_for_same_mention(tmp_bundle):
     from okf_writer import upsert_person
     for _ in range(3):
         upsert_person(
-            str(tmp_bundle), name="刻奇",
+            str(tmp_bundle), name="Alice",
             mentioned_concept_id="projects/demo/meetings/A",
             mentioned_title="A", mentioned_description="A desc",
             project="demo", timestamp="2026-06-01T00:00:00+08:00",
         )
-    p = tmp_bundle / "people" / "刻奇.md"
+    p = tmp_bundle / "people" / "Alice.md"
     text = p.read_text(encoding="utf-8")
     assert text.count("[A]") == 1
 

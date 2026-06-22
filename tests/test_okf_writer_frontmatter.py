@@ -11,12 +11,12 @@ def test_frontmatter_includes_mentions():
     classified = {
         "project": "demo", "type": "Meeting Minutes", "title": "T",
         "description": "测试会议讨论核心议题", "tags": [],
-        "people": ["刻奇"], "concepts": ["OKF"],
+        "people": ["Alice"], "concepts": ["OKF"],
         "resource": "https://x", "edited_time": "2026-06-20T14:30:00+08:00",
     }
     fm = generate_frontmatter(classified)
     assert "mentions:" in fm
-    assert "/people/刻奇.md" in fm
+    assert "/people/Alice.md" in fm
     assert "/concepts/OKF.md" in fm
     assert "/projects/demo/index.md" in fm
 

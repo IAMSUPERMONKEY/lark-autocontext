@@ -24,20 +24,20 @@ def test_body_includes_decisions_for_meeting():
     from okf_writer import generate_body
     classified = {
         "type": "Meeting Minutes", "project": "demo", "summary": "S",
-        "decisions": [{"decision": "决策A", "owner": "刻奇", "deadline": "2026-07-01"}],
+        "decisions": [{"decision": "决策A", "owner": "Alice", "deadline": "2026-07-01"}],
         "resource": "https://feishu.cn/docx/X",
     }
     body = generate_body(classified, raw_content="X")
     assert "# Decisions" in body
     assert "决策A" in body
-    assert "刻奇" in body
+    assert "Alice" in body
 
 
 def test_body_skips_decisions_for_reference():
     from okf_writer import generate_body
     classified = {
         "type": "Reference", "project": "demo", "summary": "S",
-        "decisions": [{"decision": "决策A", "owner": "刻奇", "deadline": "2026-07-01"}],
+        "decisions": [{"decision": "决策A", "owner": "Alice", "deadline": "2026-07-01"}],
         "resource": "https://feishu.cn/docx/X",
     }
     body = generate_body(classified, raw_content="X")
@@ -61,8 +61,8 @@ def test_body_includes_related_when_entities_present():
     from okf_writer import generate_body
     classified = {
         "type": "Reference", "project": "demo", "summary": "S",
-        "people": ["刻奇"], "resource": "https://feishu.cn/docx/X",
+        "people": ["Alice"], "resource": "https://feishu.cn/docx/X",
     }
     body = generate_body(classified, raw_content="X")
     assert "# Related" in body
-    assert "[刻奇](/people/刻奇.md)" in body
+    assert "[Alice](/people/Alice.md)" in body
