@@ -1,20 +1,24 @@
 {
+  "_comment": "Sources to scan during batch sync. Copy to scan_config.json and fill in.",
+
   "sources": [
     {
-      "type": "wiki",
-      "token": "wiki_token_xxx",
-      "name": "产品知识库"
+      "type": "folder",
+      "token": "FOLDER_TOKEN_HERE",
+      "name": "项目主文件夹",
+      "_note": "type: folder | wiki | bitable. token: extract from the Feishu URL."
     },
     {
-      "type": "folder",
-      "token": "folder_token_xxx",
-      "name": "项目文档"
+      "type": "wiki",
+      "token": "WIKI_SPACE_TOKEN_HERE",
+      "name": "团队 Wiki"
     },
     {
       "type": "bitable",
-      "token": "app_token_xxx",
-      "name": "业务数据"
+      "token": "BITABLE_APP_TOKEN_HERE",
+      "name": "需求清单（多维表格）"
     }
   ],
-  "scan_interval": "manual"
+
+  "_token_help": "How to find tokens:\n  - folder: https://feishu.cn/drive/folder/<TOKEN>\n  - wiki:   https://feishu.cn/wiki/<TOKEN>\n  - bitable:https://feishu.cn/base/<TOKEN>"
 }

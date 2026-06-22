@@ -550,15 +550,60 @@ def write_okf_document(classified_data, raw_content=""):
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python okf_writer.py '<classified_json>' [raw_content]")
-        print("")
-        print("classified_json example:")
-        print('  {"project":"my-project","type":"Meeting Minutes","title":"周会","tags":["会议"]}')
-        sys.exit(1)
+    """Entry point with multiple input modes (to avoid shell quoting issues).
 
-    classified_data = json.loads(sys.argv[1])
-    raw_content = sys.argv[2] if len(sys.argv) > 2 else ""
+    Modes (in priority order):
+      1. --classified-file <path> [--content-file <path>]
+         Read classified JSON (and optional raw content) from files.
+      2. --stdin
+         Read JSON object from stdin: {"classified": {...}, "raw_content": "..."}
+      3. <classified_json> [<raw_content>]
+         Legacy positional args (kept for backward compatibility).
+    """
+    import argparse
+    parser = argparse.ArgumentParser(
+        description="OKF Writer: generate OKF Markdown from classified data.",
+        add_help=False,
+    )
+    parser.add_argument("--classified-file", help="Path to a JSON file with classified data")
+    parser.add_argument("--content-file", help="Path to a text file with raw content")
+    parser.add_argument("--stdin", action="store_true",
+                        help='Read {"classified":{...},"raw_content":"..."} from stdin')
+    parser.add_argument("-h", "--help", action="store_true")
+    # Allow extra positional args for legacy mode.
+    args, rest = parser.parse_known_args()
+
+    if args.help:
+        print(
+            "Usage:\n"
+            "  python okf_writer.py --classified-file classified.json [--content-file body.md]\n"
+            "  cat payload.json | python okf_writer.py --stdin\n"
+            "  python okf_writer.py '<classified_json>' [raw_content]   # legacy\n"
+            "\n"
+            "classified_json example:\n"
+            '  {"project":"my-project","type":"Meeting Minutes","title":"周会","tags":["会议"]}'
+        )
+        sys.exit(0)
+
+    classified_data = None
+    raw_content = ""
+
+    if args.classified_file:
+        with open(args.classified_file, "r", encoding="utf-8") as f:
+            classified_data = json.load(f)
+        if args.content_file:
+            with open(args.content_file, "r", encoding="utf-8") as f:
+                raw_content = f.read()
+    elif args.stdin:
+        payload = json.load(sys.stdin)
+        classified_data = payload.get("classified") or payload
+        raw_content = payload.get("raw_content", "")
+    elif rest:
+        classified_data = json.loads(rest[0])
+        raw_content = rest[1] if len(rest) > 1 else ""
+    else:
+        print("Error: missing input. Run with --help for usage.", file=sys.stderr)
+        sys.exit(1)
 
     result = write_okf_document(classified_data, raw_content)
     print(json.dumps(result, ensure_ascii=False, indent=2))

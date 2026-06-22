@@ -18,6 +18,11 @@ class LarkCLI:
             except Exception:
                 pass
 
+        # Identity: "user" (default, can read user's private docs) or "tenant" (bot identity).
+        # User identity is required for most enterprise docs; bot identity often returns
+        # permission errors (e.g. lark-cli error 3380004) for user-owned private documents.
+        self.identity = self.config.get("identity", "user")
+
     def get_base_token(self):
         return self.config.get("base_token")
 
@@ -38,8 +43,20 @@ class LarkCLI:
         except json.JSONDecodeError:
             return True  # If output isn't JSON, assume it's working
     def run(self, command_args, as_json=True):
-        """Run lark-cli command and return output."""
+        """Run lark-cli command and return output.
+
+        Automatically injects `--as <identity>` (default: user) so that user-owned
+        private documents can be read. Skips injection for `auth ...` commands
+        and when caller already specifies `--as`.
+        """
         cmd = ["lark-cli"] + command_args
+
+        # Inject identity flag unless caller already provided one, or it's an auth command.
+        is_auth_cmd = len(command_args) > 0 and command_args[0] == "auth"
+        already_has_as = "--as" in command_args
+        if self.identity and not is_auth_cmd and not already_has_as:
+            cmd.extend(["--as", self.identity])
+
         if as_json and "--format" not in " ".join(command_args):
             # Check if the command supports --format json (API commands usually do)
             # Shortcuts (starting with +) usually do NOT support --format json

@@ -1,8 +1,15 @@
 {
+  "_comment": "Lark AutoContext core config. Copy to config.json and fill in.",
+
+  "bundle_path": "./bundle",
+
+  "identity": "user",
+  "_identity_note": "Use 'user' (default) to read your private Feishu docs. Use 'tenant' for bot-only mode (limited to docs the bot is explicitly added to).",
+
   "feishu": {
     "base_token": "YOUR_BASE_TOKEN_HERE",
-    "description": "Optional: Feishu Bitable for visualization"
+    "_base_token_note": "Optional: Feishu Bitable token, only needed if you visualize via Bitable."
   },
-  "bundle_path": "./bundle",
-  "description": "Lark AutoContext - OKF Bundle path and optional Feishu config"
+
+  "_scan_config_note": "Sources for batch scan are configured separately in scripts/scan_config.json (see scan_config.json.example)."
 }
