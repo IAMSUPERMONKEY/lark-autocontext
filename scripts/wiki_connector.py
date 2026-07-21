@@ -18,13 +18,23 @@ Task 2 adds the read operations (spec section 3.1, read operations table):
   and clean it via ``scanner.clean_feishu_content``.
 - ``fetch_doc_meta`` -- resolve title / timestamps / creator / owner.
 
-Write operations (``create_doc``, ``update_doc``, ...) are added in Tasks 3-4.
+Task 3 adds the write operations (spec section 3.1, write operations table):
+
+- ``create_doc`` -- create a new docx node under a parent node.
+- ``update_doc`` -- update an existing docx's content (full replace).
+- ``upload_attachment`` -- upload a binary file (e.g. viz.html) to a node.
+- ``delete_doc`` / ``move_doc`` -- node lifecycle (Agent reorg).
+- ``check_doc_changed`` -- detect whether a node was edited since a
+  known timestamp (used by dual_storage pull flow).
 """
 from __future__ import annotations
 
 import subprocess
 import json
 import time
+import os
+import re
+import tempfile
 import logging
 from dataclasses import dataclass
 
@@ -358,3 +368,200 @@ class WikiConnector:
             creator=creator,
             owner=owner,
         )
+
+    # ------------------------------------------------------------------
+    # Task 3: write operations
+    # ------------------------------------------------------------------
+
+    def create_doc(self, parent_node_token: str, title: str,
+                   content_md: str) -> str:
+        """Create a new Feishu docx under ``parent_node_token``.
+
+        Writes ``content_md`` to a temp file and uploads it via
+        ``wiki +create-node``. Returns the newly created node_token.
+
+        The lark-cli response may be JSON (``{"data": {"node_token": "..."}}``)
+        or plain text containing the token. JSON is tried first; on failure a
+        regex fallback extracts the token from free-form output. The temp file
+        is always cleaned up in a ``finally`` block.
+
+        Args:
+            parent_node_token: parent wiki node to create the doc under.
+            title: document title.
+            content_md: Markdown content to seed the new docx with.
+
+        Returns:
+            The new node_token (empty string when parsing fails).
+        """
+        temp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".md", delete=False, encoding="utf-8"
+        )
+        temp_path = temp.name
+        try:
+            temp.write(content_md)
+            temp.close()
+            output = self._run_lark(
+                ["wiki", "+create-node", "--space-id", self.space_id,
+                 "--parent-node-token", parent_node_token,
+                 "--node-type", "docx", "--title", title,
+                 "--file", temp_path],
+                as_json=False,
+            )
+            # Parse node_token: JSON first, regex fallback.
+            node_token = ""
+            try:
+                data = json.loads(output) if isinstance(output, str) else output
+                node_token = data.get("data", {}).get("node_token", "")
+            except (json.JSONDecodeError, AttributeError, TypeError):
+                pass
+            if not node_token:
+                match = re.search(
+                    r'node[_-]?token["\s:]+([a-zA-Z0-9]+)', output
+                )
+                if match:
+                    node_token = match.group(1)
+            return node_token
+        finally:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+
+    def update_doc(self, node_token: str, content_md: str) -> None:
+        """Update an existing docx content (full Markdown replace).
+
+        Resolves ``node_token`` -> ``obj_token`` via the wiki node list, writes
+        ``content_md`` to a temp file, and uploads it through
+        ``docs +update --doc-format markdown``. The temp file is always
+        cleaned up in a ``finally`` block.
+
+        Args:
+            node_token: wiki node token of the document to update.
+            content_md: new Markdown content (replaces the existing body).
+        """
+        temp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".md", delete=False, encoding="utf-8"
+        )
+        temp_path = temp.name
+        try:
+            temp.write(content_md)
+            temp.close()
+            obj_token = self._resolve_obj_token(node_token)
+            self._run_lark(
+                ["docs", "+update", "--doc", obj_token,
+                 "--doc-format", "markdown", "--file", temp_path],
+                as_json=False,
+            )
+        finally:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+
+    def upload_attachment(self, parent_node_token: str, filename: str,
+                          file_bytes: bytes) -> str:
+        """Upload a binary file (e.g. ``viz.html``) under ``parent_node_token``.
+
+        Writes ``file_bytes`` to a temp file and uploads it via
+        ``drive +upload``. Returns the file_token of the uploaded file.
+
+        The lark-cli response may be JSON
+        (``{"data": {"file_token": "..."}}``) or plain text. JSON is tried
+        first; on failure a regex fallback extracts the token.
+
+        Args:
+            parent_node_token: parent folder/node token to upload under.
+            filename: file name for the uploaded resource.
+            file_bytes: raw file content as bytes.
+
+        Returns:
+            The file_token (empty string when parsing fails).
+        """
+        temp = tempfile.NamedTemporaryFile(
+            suffix=f"_{filename}", delete=False
+        )
+        temp_path = temp.name
+        try:
+            temp.write(file_bytes)
+            temp.close()
+            output = self._run_lark(
+                ["drive", "+upload", "--folder-token", parent_node_token,
+                 "--file", temp_path, "--file-name", filename],
+                as_json=False,
+            )
+            # Parse file_token: JSON first, regex fallback.
+            file_token = ""
+            try:
+                data = json.loads(output) if isinstance(output, str) else output
+                file_token = data.get("data", {}).get("file_token", "")
+            except (json.JSONDecodeError, AttributeError, TypeError):
+                pass
+            if not file_token:
+                match = re.search(
+                    r'(file[_-]?token)["\s:]+([a-zA-Z0-9]+)', output
+                )
+                if match:
+                    file_token = match.group(2)
+            return file_token
+        finally:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+
+    def delete_doc(self, node_token: str) -> None:
+        """Delete a wiki node (Agent reorg cleanup).
+
+        Args:
+            node_token: wiki node token to delete.
+        """
+        self._run_lark(
+            ["wiki", "+delete-node", "--space-id", self.space_id,
+             "--node-token", node_token],
+            as_json=False,
+        )
+
+    def move_doc(self, node_token: str, new_parent_token: str) -> None:
+        """Move a wiki node to a new parent (topic reorg).
+
+        Args:
+            node_token: wiki node token to move.
+            new_parent_token: target parent node token.
+        """
+        self._run_lark(
+            ["wiki", "+move-node", "--space-id", self.space_id,
+             "--node-token", node_token,
+             "--target-parent-token", new_parent_token],
+            as_json=False,
+        )
+
+    def check_doc_changed(self, node_token: str,
+                          last_known_time: str) -> bool:
+        """Check whether a wiki node was edited after ``last_known_time``.
+
+        Fetches the full node list, finds the node matching ``node_token``,
+        and compares its ``obj_edit_time`` against ``last_known_time``.
+        ``last_known_time`` is normalized to a Unix timestamp via
+        :meth:`_since_to_unix` (ISO 8601 is accepted). String comparison of
+        same-length Unix timestamps is equivalent to numeric comparison.
+
+        Returns ``True`` when ``obj_edit_time > last_known_time`` (i.e. the
+        document was edited after the known timestamp), ``False`` otherwise.
+        When the node is not found, logs a warning and returns ``False``
+        (spec error handling: skip, do not raise).
+
+        Args:
+            node_token: wiki node token to check.
+            last_known_time: Unix timestamp or ISO 8601 string of the last
+                known edit time.
+        """
+        for n in self._fetch_all_nodes():
+            if n.get("node_token") == node_token:
+                current_time = str(n.get("obj_edit_time", ""))
+                known_time = self._since_to_unix(last_known_time)
+                return current_time > known_time
+        logger.warning(
+            "check_doc_changed: node %r not found in space %s",
+            node_token, self.space_id,
+        )
+        return False

@@ -14,6 +14,7 @@ All subprocess/time interactions are mocked -- no real lark-cli calls are made.
 import sys
 import os
 import json
+import tempfile
 import dataclasses
 from unittest.mock import patch, MagicMock
 
@@ -472,3 +473,242 @@ def test_429_retry_in_read_op():
     assert [c.args[0] for c in mock_sleep.call_args_list] == [1, 2]
     assert len(result) == 1
     assert result[0].node_token == "n1"
+
+
+# ===========================================================================
+# Task 3: write operations (create_doc, update_doc, upload_attachment,
+#         delete_doc, move_doc, check_doc_changed)
+#
+# Every test mocks either _run_lark (for the lark-cli delegating methods) or
+# _fetch_all_nodes (for check_doc_changed). subprocess.run is NEVER invoked,
+# so no real lark-cli calls are made. Temp files are tracked via a wrapper
+# around tempfile.NamedTemporaryFile so cleanup can be asserted.
+# ===========================================================================
+
+def _tracking_temp_factory():
+    """Return (wrapper, paths_list).
+
+    The wrapper delegates to the real tempfile.NamedTemporaryFile so the
+    implementation under test gets a genuine on-disk file (writeable, with a
+    real .name path). Every created path is recorded in paths_list so the
+    test can later assert os.path.exists(path) is False (i.e. the finally
+    block cleaned up).
+    """
+    real = tempfile.NamedTemporaryFile
+    paths = []
+
+    def wrapper(*args, **kwargs):
+        f = real(*args, **kwargs)
+        paths.append(f.name)
+        return f
+
+    return wrapper, paths
+
+
+# ---------------------------------------------------------------------------
+# create_doc
+# ---------------------------------------------------------------------------
+
+def test_create_doc_returns_node_token():
+    """create_doc returns node_token parsed from a JSON lark-cli response."""
+    conn = WikiConnector("space-1", "raw-root", "agent-root")
+    wrapper, paths = _tracking_temp_factory()
+    response = json.dumps({"data": {"node_token": "new-node-abc"}})
+
+    with patch.object(conn, "_run_lark", return_value=response) as mock_run, \
+            patch.object(tempfile, "NamedTemporaryFile", wrapper):
+        result = conn.create_doc("parent-1", "New Doc", "# Hello world")
+
+    assert result == "new-node-abc"
+    # Verify _run_lark was called with the expected lark-cli args.
+    call_args = mock_run.call_args[0][0]
+    expected_prefix = [
+        "wiki", "+create-node", "--space-id", "space-1",
+        "--parent-node-token", "parent-1", "--node-type", "docx",
+        "--title", "New Doc", "--file",
+    ]
+    assert call_args[:len(expected_prefix)] == expected_prefix
+    # A temp path follows --file.
+    assert len(call_args) == len(expected_prefix) + 1
+    assert isinstance(call_args[-1], str)
+    # Verify the temp file was cleaned up.
+    assert len(paths) == 1
+    assert not os.path.exists(paths[0])
+
+
+def test_create_doc_plain_text_response():
+    """create_doc falls back to regex when the response is plain text."""
+    conn = WikiConnector("space-1", "raw-root", "agent-root")
+    wrapper, paths = _tracking_temp_factory()
+    # Plain text (not JSON) containing the token.
+    response = "node_token: abc123"
+
+    with patch.object(conn, "_run_lark", return_value=response), \
+            patch.object(tempfile, "NamedTemporaryFile", wrapper):
+        result = conn.create_doc("parent-1", "Plain Doc", "# Body")
+
+    assert result == "abc123"
+    assert len(paths) == 1
+    assert not os.path.exists(paths[0])
+
+
+# ---------------------------------------------------------------------------
+# update_doc
+# ---------------------------------------------------------------------------
+
+def test_update_doc():
+    """update_doc resolves obj_token then calls docs +update with a temp file."""
+    conn = WikiConnector("space-1", "raw-root", "agent-root")
+    wrapper, paths = _tracking_temp_factory()
+    nodes = [
+        {"node_token": "node-1", "obj_token": "obj-123", "title": "Doc",
+         "obj_type": "docx", "obj_edit_time": "1700000000",
+         "parent_node_token": "raw-root", "has_child": False},
+    ]
+    node_list_payload = json.dumps({"data": {"nodes": nodes}})
+
+    def fake_run_lark(args, as_json=True, retries=3):
+        joined = " ".join(args)
+        if "node-list" in joined:
+            return node_list_payload
+        if "+update" in joined:
+            return "ok"
+        return ""
+
+    with patch.object(conn, "_run_lark", side_effect=fake_run_lark) as mock_run, \
+            patch.object(tempfile, "NamedTemporaryFile", wrapper):
+        result = conn.update_doc("node-1", "# Updated content")
+
+    assert result is None
+    # Two lark-cli calls: node-list (resolve obj_token) + docs update.
+    assert mock_run.call_count == 2
+    update_args = mock_run.call_args_list[1][0][0]
+    expected_prefix = [
+        "docs", "+update", "--doc", "obj-123",
+        "--doc-format", "markdown", "--file",
+    ]
+    assert update_args[:len(expected_prefix)] == expected_prefix
+    assert len(update_args) == len(expected_prefix) + 1  # temp_path
+    # Verify the temp file was cleaned up.
+    assert len(paths) == 1
+    assert not os.path.exists(paths[0])
+
+
+# ---------------------------------------------------------------------------
+# upload_attachment
+# ---------------------------------------------------------------------------
+
+def test_upload_attachment():
+    """upload_attachment returns file_token parsed from a JSON response."""
+    conn = WikiConnector("space-1", "raw-root", "agent-root")
+    wrapper, paths = _tracking_temp_factory()
+    response = json.dumps({"data": {"file_token": "file-abc"}})
+    file_bytes = b"%PDF-1.4 fake binary content"
+
+    with patch.object(conn, "_run_lark", return_value=response) as mock_run, \
+            patch.object(tempfile, "NamedTemporaryFile", wrapper):
+        result = conn.upload_attachment("parent-1", "report.pdf", file_bytes)
+
+    assert result == "file-abc"
+    call_args = mock_run.call_args[0][0]
+    expected_prefix = [
+        "drive", "+upload", "--folder-token", "parent-1",
+        "--file", "--file-name", "report.pdf",
+    ]
+    # Check all expected tokens are present (order tolerant for --file-name).
+    for token in expected_prefix:
+        assert token in call_args
+    # Verify the temp file was cleaned up.
+    assert len(paths) == 1
+    assert not os.path.exists(paths[0])
+
+
+# ---------------------------------------------------------------------------
+# delete_doc
+# ---------------------------------------------------------------------------
+
+def test_delete_doc():
+    """delete_doc calls wiki +delete-node with space_id and node_token."""
+    conn = WikiConnector("space-1", "raw-root", "agent-root")
+    with patch.object(conn, "_run_lark", return_value="ok") as mock_run:
+        result = conn.delete_doc("node-1")
+    assert result is None
+    call_args = mock_run.call_args[0][0]
+    assert call_args == [
+        "wiki", "+delete-node", "--space-id", "space-1",
+        "--node-token", "node-1",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# move_doc
+# ---------------------------------------------------------------------------
+
+def test_move_doc():
+    """move_doc calls wiki +move-node with space_id, node_token and target parent."""
+    conn = WikiConnector("space-1", "raw-root", "agent-root")
+    with patch.object(conn, "_run_lark", return_value="ok") as mock_run:
+        result = conn.move_doc("node-1", "new-parent")
+    assert result is None
+    call_args = mock_run.call_args[0][0]
+    assert call_args == [
+        "wiki", "+move-node", "--space-id", "space-1",
+        "--node-token", "node-1", "--target-parent-token", "new-parent",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# check_doc_changed
+# ---------------------------------------------------------------------------
+
+def test_check_doc_changed_true():
+    """check_doc_changed returns True when obj_edit_time > last_known_time."""
+    conn = WikiConnector("space-1", "raw-root", "agent-root")
+    nodes = [
+        {"node_token": "node-1", "obj_edit_time": "1700000002"},
+    ]
+    with patch.object(conn, "_fetch_all_nodes", return_value=nodes):
+        result = conn.check_doc_changed("node-1", "1700000001")
+    assert result is True
+
+
+def test_check_doc_changed_false():
+    """check_doc_changed returns False when obj_edit_time <= last_known_time."""
+    conn = WikiConnector("space-1", "raw-root", "agent-root")
+    nodes = [
+        {"node_token": "node-1", "obj_edit_time": "1700000002"},
+    ]
+    with patch.object(conn, "_fetch_all_nodes", return_value=nodes):
+        result = conn.check_doc_changed("node-1", "1700000003")
+    assert result is False
+
+
+def test_check_doc_changed_node_not_found():
+    """check_doc_changed returns False when the node is missing from the space."""
+    conn = WikiConnector("space-1", "raw-root", "agent-root")
+    nodes = [
+        {"node_token": "other-node", "obj_edit_time": "1700000002"},
+    ]
+    with patch.object(conn, "_fetch_all_nodes", return_value=nodes):
+        result = conn.check_doc_changed("missing-node", "1700000001")
+    assert result is False
+
+
+# ---------------------------------------------------------------------------
+# Temp file cleanup on error
+# ---------------------------------------------------------------------------
+
+def test_temp_file_cleanup_on_error():
+    """create_doc still cleans up the temp file when _run_lark raises."""
+    conn = WikiConnector("space-1", "raw-root", "agent-root")
+    wrapper, paths = _tracking_temp_factory()
+
+    with patch.object(conn, "_run_lark", side_effect=RuntimeError("lark-cli failed")), \
+            patch.object(tempfile, "NamedTemporaryFile", wrapper):
+        with pytest.raises(RuntimeError):
+            conn.create_doc("parent-1", "Doc", "# content")
+
+    # The finally block must have removed the temp file even though _run_lark
+    # raised.
+    assert len(paths) == 1
+    assert not os.path.exists(paths[0])
