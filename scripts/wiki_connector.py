@@ -34,6 +34,7 @@ import json
 import time
 import os
 import re
+import yaml
 import tempfile
 import logging
 from dataclasses import dataclass
@@ -565,3 +566,156 @@ class WikiConnector:
             node_token, self.space_id,
         )
         return False
+
+
+# ------------------------------------------------------------------
+# Task 4: OKF ↔ Feishu docx conversion (module-level functions)
+#
+# Feishu docx does not carry YAML frontmatter. When pushing an OKF document
+# to Feishu the frontmatter is replaced by a human-readable emoji metadata
+# header (spec section 3.1); when pulling Feishu edits back, the header is
+# stripped and the body is cleaned. These five pure-string functions are the
+# shared conversion layer used by dual_storage.py (Task 5).
+# ------------------------------------------------------------------
+
+
+def _parse_frontmatter(content: str) -> tuple[dict, str]:
+    """Parse YAML frontmatter from OKF Markdown content.
+
+    Frontmatter is delimited by ``---`` at the start of the file. The YAML
+    block between the opening and closing ``---`` is parsed with
+    :func:`yaml.safe_load`. Returns ``(frontmatter_dict, body_str)`` where
+    ``body_str`` is everything after the closing ``---`` (leading newlines
+    stripped). When no frontmatter is present (the content does not start
+    with ``---``), returns ``({}, content)``.
+
+    Edge cases:
+      - Empty frontmatter (``---\\n---``) -> ``({}, "")``.
+      - A ``timestamp`` ISO 8601 value is parsed by PyYAML into a
+        :class:`datetime.datetime`; callers that need a string slice should
+        coerce via :func:`str` first.
+    """
+    if not content.startswith("---"):
+        return ({}, content)
+    lines = content.split("\n")
+    # Locate the closing ``---`` delimiter (first one after the opening line).
+    closing_idx = None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            closing_idx = i
+            break
+    if closing_idx is None:
+        # Opening delimiter without a closing one -> not valid frontmatter.
+        return ({}, content)
+    yaml_block = "\n".join(lines[1:closing_idx])
+    body = "\n".join(lines[closing_idx + 1:])
+    fm = yaml.safe_load(yaml_block) if yaml_block.strip() else {}
+    if fm is None or not isinstance(fm, dict):
+        fm = {}
+    return (fm, body.lstrip("\n"))
+
+
+def generate_metadata_header(frontmatter: dict) -> str:
+    """Generate a human-readable emoji metadata header from frontmatter.
+
+    Mirrors spec section 3.1 (OKF → 飞书 docx 转换): the YAML frontmatter is
+    not written to Feishu, so this header is the human-readable substitute
+    placed at the top of the Feishu document body. Each line only includes
+    fields present in ``frontmatter`` (empty/missing fields are skipped).
+
+    Layout::
+
+        📝 类型：{type} | 项目：{project} | 标签：{tags}
+        👥 相关人员：{people} | 📅 {date}
+        🔗 原始文档：{resource}
+        ---
+
+    ``type`` is always included (default ``"Other"``). ``tags`` / ``people``
+    accept either a list (joined with ``", "``) or a plain string. ``date``
+    is extracted from ``timestamp`` as the first 10 characters (``YYYY-MM-DD``
+    from an ISO 8601 value, coerced via :func:`str` so a PyYAML-parsed
+    :class:`~datetime.datetime` is handled too). The returned string ends
+    with ``---`` and has NO trailing newline (the caller adds the
+    ``"\\n\\n"`` separator before the body).
+    """
+    # Line 1: type (always, default "Other") | project | tags
+    line1_parts = [f"📝 类型：{frontmatter.get('type') or 'Other'}"]
+    if frontmatter.get("project"):
+        line1_parts.append(f"项目：{frontmatter['project']}")
+    if frontmatter.get("tags"):
+        tags = frontmatter["tags"]
+        tags_str = ", ".join(tags) if isinstance(tags, list) else str(tags)
+        line1_parts.append(f"标签：{tags_str}")
+
+    # Line 2: people | date (from timestamp, first 10 chars = YYYY-MM-DD)
+    line2_parts = []
+    if frontmatter.get("people"):
+        people = frontmatter["people"]
+        people_str = ", ".join(people) if isinstance(people, list) else str(people)
+        line2_parts.append(f"👥 相关人员：{people_str}")
+    date = str(frontmatter.get("timestamp") or "")[:10]
+    if date:
+        line2_parts.append(f"📅 {date}")
+
+    lines = [" | ".join(line1_parts)]
+    if line2_parts:
+        lines.append(" | ".join(line2_parts))
+    if frontmatter.get("resource"):
+        lines.append(f"🔗 原始文档：{frontmatter['resource']}")
+    lines.append("---")
+    return "\n".join(lines)
+
+
+def strip_metadata_header(content: str) -> str:
+    """Remove the emoji metadata header from Feishu content.
+
+    The header starts with ``📝`` and ends with ``---`` on its own line. This
+    function finds the first ``📝`` marker, then the next ``---`` line after
+    it, and returns everything after that ``---`` line (leading
+    whitespace/newlines stripped). When no ``📝`` is present, ``content`` is
+    returned unchanged (there is no header to strip). If a ``📝`` is found but
+    no closing ``---`` follows, the content is also returned unchanged.
+    """
+    idx = content.find("📝")
+    if idx == -1:
+        return content
+    after = content[idx:]
+    lines = after.split("\n")
+    closing = None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            closing = i
+            break
+    if closing is None:
+        return content
+    body = "\n".join(lines[closing + 1:])
+    return body.lstrip("\n")
+
+
+def okf_to_feishu_content(okf_content: str) -> str:
+    """Convert OKF Markdown into Feishu-displayable content.
+
+    Full conversion pipeline:
+
+    1. Parse the YAML frontmatter with :func:`_parse_frontmatter`.
+    2. Generate the emoji metadata header with :func:`generate_metadata_header`.
+    3. Concatenate ``header + "\\n\\n" + body``.
+
+    The Markdown body is preserved verbatim -- Feishu docx can import Markdown
+    directly, so no block-level transformation is needed here.
+    """
+    fm, body = _parse_frontmatter(okf_content)
+    header = generate_metadata_header(fm)
+    return header + "\n\n" + body
+
+
+def feishu_to_okf_body(feishu_content: str) -> str:
+    """Convert Feishu content back to an OKF body (without frontmatter).
+
+    Strips the emoji metadata header with :func:`strip_metadata_header`, then
+    cleans residual Feishu HTML/private tags via
+    :func:`scanner.clean_feishu_content`. The caller is responsible for
+    re-attaching the local frontmatter (human edits never touch frontmatter).
+    """
+    stripped = strip_metadata_header(feishu_content)
+    return clean_feishu_content(stripped)
