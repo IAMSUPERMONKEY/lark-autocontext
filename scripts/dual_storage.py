@@ -1,7 +1,8 @@
 """DualStorage: bidirectional sync coordinator between local bundle and Feishu Wiki.
 
 Manages sync_state.json — per-document sync tracking with conflict detection.
-Task 5 delivers state management only; sync operations added in Tasks 6-7.
+Task 5 delivered state management; Task 6 adds the local -> Feishu push flow
+(``sync_to_feishu``). The Feishu -> local pull flow is added in Task 7.
 """
 from __future__ import annotations
 
@@ -12,6 +13,10 @@ import logging
 from enum import Enum
 from dataclasses import dataclass, field
 from datetime import datetime
+
+# OKF <-> Feishu docx conversion helpers (Task 4). wiki_connector imports
+# scanner (stdlib-only cli); there is no circular import back to dual_storage.
+from wiki_connector import okf_to_feishu_content, _parse_frontmatter
 
 logger = logging.getLogger(__name__)
 
@@ -64,15 +69,27 @@ class SyncState:
         )
 
 
+@dataclass
+class SyncResult:
+    """Result of a sync operation."""
+    success: bool
+    action: str = ""        # "created", "updated", "failed"
+    node_token: str = ""    # Feishu node token (if successful)
+    feishu_url: str = ""
+    error: str = ""         # error message if failed
+
+
 class DualStorage:
     """Bidirectional sync coordinator between local bundle and Feishu Wiki.
 
     Manages sync_state.json with atomic writes and corruption recovery.
-    Sync operations (sync_to_feishu, pull_from_feishu) added in Tasks 6-7.
+    Sync operations: ``sync_to_feishu`` (Task 6, local -> Feishu push) and
+    ``pull_from_feishu`` (Task 7, Feishu -> local pull).
 
     Args:
         bundle_path: Path to the local bundle directory.
-        wiki_connector: WikiConnector instance (used in Tasks 6-7, not needed for Task 5).
+        wiki_connector: WikiConnector instance (required for sync_to_feishu;
+            not needed for the pure state-management methods of Task 5).
     """
 
     def __init__(self, bundle_path: str, wiki_connector=None):
@@ -140,3 +157,100 @@ class DualStorage:
         state = self.load_state()
         state.get("docs", {}).pop(key, None)
         self.save_state(state)
+
+    # ------------------------------------------------------------------
+    # Task 6: local -> Feishu push flow
+    # ------------------------------------------------------------------
+
+    def sync_to_feishu(self, okf_path: str, okf_content: str) -> SyncResult:
+        """Push local OKF document to Feishu Wiki (Agent maintenance area).
+
+        Flow (spec section 3.2 "写入流：本地 → 飞书"):
+        1. Parse frontmatter to get title.
+        2. Convert OKF -> Feishu content (okf_to_feishu_content).
+        3. Compute local content hash.
+        4. Check sync_state: does this local_path already have a
+           feishu_node_token?
+           - Yes -> update_doc(node_token, feishu_content)
+           - No  -> create_doc(agent_node_token, title, feishu_content)
+                    -> get new node_token
+        5. On success: update sync_state (hash, node_token,
+           sync_direction=in_sync).
+        6. On failure: return SyncResult(success=False), do NOT update
+           sync_state (so it stays local_newer for retry).
+
+        Atomicity (spec section 3.2 "原子性保证"): sync_state is only written
+        AFTER a successful Feishu API call. A failed push leaves sync_state
+        untouched, so the document remains pending and is retried next time.
+
+        Args:
+            okf_path: relative path of the OKF file in bundle (e.g.
+                "projects/demo/meeting-minutes/2026-06-20.md").
+            okf_content: full OKF Markdown content (with frontmatter).
+
+        Returns:
+            A :class:`SyncResult` describing the outcome.
+
+        Raises:
+            RuntimeError: if ``self.wiki_connector`` is None (misconfigured).
+        """
+        if self.wiki_connector is None:
+            raise RuntimeError("wiki_connector not configured")
+
+        # 1. Parse frontmatter -> title (fall back to the path itself).
+        fm, _body = _parse_frontmatter(okf_content)
+        title = fm.get("title", okf_path)
+
+        # 2. Convert OKF -> Feishu-displayable content.
+        feishu_content = okf_to_feishu_content(okf_content)
+
+        # 3. Compute local content hash (over the full OKF content, including
+        #    frontmatter, so any local edit is detected).
+        local_hash = self._compute_hash(okf_content)
+
+        # 4. Decide create vs. update based on existing sync_state.
+        existing = self.get_doc_state(okf_path)
+
+        try:
+            if existing is not None and existing.feishu_node_token:
+                # Update the existing Feishu doc.
+                node_token = existing.feishu_node_token
+                self.wiki_connector.update_doc(node_token, feishu_content)
+                action = "updated"
+            else:
+                # Create a new doc under the Agent maintenance root.
+                node_token = self.wiki_connector.create_doc(
+                    self.wiki_connector.agent_node_token, title, feishu_content
+                )
+                action = "created"
+        except Exception as e:  # noqa: BLE001 - report any Feishu API failure
+            logger.error(
+                "sync_to_feishu: push failed for %s: %s", okf_path, e
+            )
+            # Do NOT update sync_state -- stays local_newer for retry.
+            return SyncResult(
+                success=False, action="failed", error=str(e)
+            )
+
+        # 5. On success: build feishu_url and persist the new sync_state.
+        feishu_url = f"https://feishu.cn/wiki/{node_token}"
+        now = datetime.now().isoformat()
+        sync_state = SyncState(
+            local_path=okf_path,
+            feishu_node_token=node_token,
+            feishu_url=feishu_url,
+            local_content_hash=local_hash,
+            feishu_modified_time="",  # filled by detect_feishu_edits later
+            local_modified_time=now,
+            sync_direction=SyncDirection.IN_SYNC.value,
+            last_sync_at=now,
+        )
+        self.update_doc_state(node_token, sync_state)
+
+        # 6. Return success result.
+        return SyncResult(
+            success=True,
+            action=action,
+            node_token=node_token,
+            feishu_url=feishu_url,
+        )
