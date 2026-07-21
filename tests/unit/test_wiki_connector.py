@@ -13,6 +13,7 @@ All subprocess/time interactions are mocked -- no real lark-cli calls are made.
 """
 import sys
 import os
+import json
 import dataclasses
 from unittest.mock import patch, MagicMock
 
@@ -214,3 +215,260 @@ def test_run_lark_raises_on_non_429_error_without_retry():
     assert mock_run.call_count == 1
     assert mock_sleep.call_count == 0
     assert "permission denied" in str(exc_info.value)
+
+
+# ===========================================================================
+# Task 2: read operations (list_raw_docs, fetch_doc_content, fetch_doc_meta,
+#         list_wiki_subtree, list_agent_docs)
+#
+# Every test mocks subprocess.run (the lowest layer _run_lark delegates to)
+# so that NO real lark-cli calls are ever made. _run_lark itself runs for
+# real, which also exercises its 429-retry path on the read operations.
+# ===========================================================================
+
+def _ok(stdout_str):
+    """Build a successful subprocess.run return value mock."""
+    m = MagicMock()
+    m.returncode = 0
+    m.stdout = stdout_str
+    m.stderr = ""
+    return m
+
+
+# ---------------------------------------------------------------------------
+# list_raw_docs
+# ---------------------------------------------------------------------------
+
+def test_list_raw_docs_basic():
+    """list_raw_docs returns DocInfo only for direct children of raw_node_token."""
+    conn = WikiConnector("space-1", "raw-root", "agent-root")
+    nodes = [
+        {"node_token": "n1", "obj_token": "o1", "title": "Doc 1", "obj_type": "docx",
+         "obj_edit_time": "1700000000", "parent_node_token": "raw-root",
+         "has_child": False},
+        {"node_token": "n2", "obj_token": "o2", "title": "Doc 2", "obj_type": "sheet",
+         "obj_edit_time": "1700000001", "parent_node_token": "raw-root",
+         "has_child": True},
+        {"node_token": "n3", "obj_token": "o3", "title": "Doc 3", "obj_type": "docx",
+         "obj_edit_time": "1700000002", "parent_node_token": "other-parent",
+         "has_child": False},
+    ]
+    payload = json.dumps({"data": {"nodes": nodes}})
+
+    with patch("subprocess.run", return_value=_ok(payload)) as mock_run:
+        result = conn.list_raw_docs()
+
+    # Exactly one lark-cli call (wiki +node-list), no real subprocess.
+    assert mock_run.call_count == 1
+    assert len(result) == 2
+    assert all(isinstance(d, DocInfo) for d in result)
+    assert [d.node_token for d in result] == ["n1", "n2"]
+
+    assert result[0].title == "Doc 1"
+    assert result[0].obj_type == "docx"
+    assert result[0].modified_time == "1700000000"
+    assert result[0].url == "https://feishu.cn/wiki/n1"
+    assert result[0].has_children is False
+
+    assert result[1].title == "Doc 2"
+    assert result[1].obj_type == "sheet"
+    assert result[1].has_children is True
+    assert result[1].url == "https://feishu.cn/wiki/n2"
+
+
+def test_list_raw_docs_with_since_filter():
+    """list_raw_docs(since=...) keeps only nodes with obj_edit_time >= since."""
+    conn = WikiConnector("space-1", "raw-root", "agent-root")
+    nodes = [
+        {"node_token": "old", "obj_token": "o-old", "title": "Old", "obj_type": "docx",
+         "obj_edit_time": "1700000000", "parent_node_token": "raw-root",
+         "has_child": False},
+        {"node_token": "new", "obj_token": "o-new", "title": "New", "obj_type": "docx",
+         "obj_edit_time": "1700000020", "parent_node_token": "raw-root",
+         "has_child": False},
+    ]
+    payload = json.dumps({"data": {"nodes": nodes}})
+    # 2023-11-14T22:13:30+00:00 == Unix 1700000010
+    with patch("subprocess.run", return_value=_ok(payload)):
+        result = conn.list_raw_docs(since="2023-11-14T22:13:30+00:00")
+
+    assert len(result) == 1
+    assert result[0].node_token == "new"
+
+
+# ---------------------------------------------------------------------------
+# fetch_doc_content
+# ---------------------------------------------------------------------------
+
+def test_fetch_doc_content():
+    """fetch_doc_content resolves obj_token, fetches markdown, cleans it."""
+    conn = WikiConnector("space-1", "raw-root", "agent-root")
+    nodes = [
+        {"node_token": "target", "obj_token": "obj-123", "title": "Target",
+         "obj_type": "docx", "obj_edit_time": "1700000000",
+         "parent_node_token": "raw-root", "has_child": False},
+    ]
+    node_list_payload = json.dumps({"data": {"nodes": nodes}})
+    raw_content = "# Raw\n\n<p>hello</p>"
+    doc_payload = json.dumps({"data": {"document": {"content": raw_content}}})
+
+    def fake_run(cmd, *args, **kwargs):
+        # lark-cli shortcut elements carry a '+' prefix (e.g. '+node-list'), so
+        # match by substring across the whole joined command string.
+        cmd_str = " ".join(cmd)
+        if "node-list" in cmd_str:
+            return _ok(node_list_payload)
+        if "fetch" in cmd_str:
+            return _ok(doc_payload)
+        return _ok("{}")
+
+    with patch("subprocess.run", side_effect=fake_run) as mock_run, \
+            patch("wiki_connector.clean_feishu_content",
+                  return_value="CLEANED_OUTPUT") as mock_clean:
+        result = conn.fetch_doc_content("target")
+
+    # Two lark-cli calls: node-list (resolve obj_token) + docs fetch (content).
+    assert mock_run.call_count == 2
+    mock_clean.assert_called_once_with(raw_content)
+    assert result == "CLEANED_OUTPUT"
+
+
+# ---------------------------------------------------------------------------
+# fetch_doc_meta
+# ---------------------------------------------------------------------------
+
+def test_fetch_doc_meta():
+    """fetch_doc_meta resolves obj_token, inspects title, fetches timestamps."""
+    conn = WikiConnector("space-1", "raw-root", "agent-root")
+    nodes = [
+        {"node_token": "meta-node", "obj_token": "obj-meta", "title": "Meta Node",
+         "obj_type": "docx", "obj_edit_time": "1700000000",
+         "parent_node_token": "raw-root", "has_child": False},
+    ]
+    node_list_payload = json.dumps({"data": {"nodes": nodes}})
+    inspect_payload = json.dumps({"data": {"title": "Meta Doc Title"}})
+    detail_payload = json.dumps({"data": {"document": {
+        "title": "Meta Doc Title",
+        "created_time_iso": "2026-01-01T00:00:00+08:00",
+        "last_modified_time_iso": "2026-07-21T10:00:00+08:00",
+        "creator": "alice",
+        "owner": "bob",
+    }}})
+
+    def fake_run(cmd, *args, **kwargs):
+        # lark-cli shortcut elements carry a '+' prefix (e.g. '+node-list'), so
+        # match by substring across the whole joined command string.
+        cmd_str = " ".join(cmd)
+        if "node-list" in cmd_str:
+            return _ok(node_list_payload)
+        if "inspect" in cmd_str:
+            return _ok(inspect_payload)
+        if "fetch" in cmd_str:
+            return _ok(detail_payload)
+        return _ok("{}")
+
+    with patch("subprocess.run", side_effect=fake_run) as mock_run:
+        meta = conn.fetch_doc_meta("meta-node")
+
+    # Three lark-cli calls: node-list + drive inspect + docs fetch --detail full.
+    assert mock_run.call_count == 3
+    assert isinstance(meta, DocMeta)
+    assert meta.title == "Meta Doc Title"
+    assert meta.created_time == "2026-01-01T00:00:00+08:00"
+    assert meta.modified_time == "2026-07-21T10:00:00+08:00"
+    assert meta.creator == "alice"
+    assert meta.owner == "bob"
+
+
+# ---------------------------------------------------------------------------
+# list_wiki_subtree
+# ---------------------------------------------------------------------------
+
+def test_list_wiki_subtree():
+    """list_wiki_subtree returns ALL descendants via parent_node_token traversal."""
+    conn = WikiConnector("space-1", "raw-root", "agent-root")
+    nodes = [
+        {"node_token": "subroot", "obj_token": "o-sub", "title": "Subroot",
+         "obj_type": "docx", "obj_edit_time": "1700000000",
+         "parent_node_token": "", "has_child": True},
+        {"node_token": "child1", "obj_token": "o-c1", "title": "Child 1",
+         "obj_type": "docx", "obj_edit_time": "1700000001",
+         "parent_node_token": "subroot", "has_child": True},
+        {"node_token": "grandchild1", "obj_token": "o-gc1", "title": "GC 1",
+         "obj_type": "docx", "obj_edit_time": "1700000002",
+         "parent_node_token": "child1", "has_child": False},
+        {"node_token": "child2", "obj_token": "o-c2", "title": "Child 2",
+         "obj_type": "docx", "obj_edit_time": "1700000003",
+         "parent_node_token": "subroot", "has_child": False},
+        {"node_token": "other", "obj_token": "o-other", "title": "Other",
+         "obj_type": "docx", "obj_edit_time": "1700000004",
+         "parent_node_token": "different", "has_child": False},
+    ]
+    payload = json.dumps({"data": {"nodes": nodes}})
+
+    with patch("subprocess.run", return_value=_ok(payload)):
+        result = conn.list_wiki_subtree("subroot")
+
+    tokens = sorted(d.node_token for d in result)
+    # subroot itself is NOT included; only its descendants (child1, child2,
+    # and the deeply nested grandchild1). "other" is unrelated.
+    assert tokens == ["child1", "child2", "grandchild1"]
+    assert all(isinstance(d, DocInfo) for d in result)
+    assert all(d.url == f"https://feishu.cn/wiki/{d.node_token}" for d in result)
+
+
+# ---------------------------------------------------------------------------
+# list_agent_docs
+# ---------------------------------------------------------------------------
+
+def test_list_agent_docs():
+    """list_agent_docs filters direct children of agent_node_token."""
+    conn = WikiConnector("space-1", "raw-root", "agent-root")
+    nodes = [
+        {"node_token": "a1", "obj_token": "oa1", "title": "Agent Doc 1",
+         "obj_type": "docx", "obj_edit_time": "1700000000",
+         "parent_node_token": "agent-root", "has_child": False},
+        {"node_token": "a2", "obj_token": "oa2", "title": "Agent Doc 2",
+         "obj_type": "docx", "obj_edit_time": "1700000001",
+         "parent_node_token": "agent-root", "has_child": False},
+        {"node_token": "r1", "obj_token": "or1", "title": "Raw Doc",
+         "obj_type": "docx", "obj_edit_time": "1700000002",
+         "parent_node_token": "raw-root", "has_child": False},
+    ]
+    payload = json.dumps({"data": {"nodes": nodes}})
+
+    with patch("subprocess.run", return_value=_ok(payload)):
+        result = conn.list_agent_docs()
+
+    assert len(result) == 2
+    assert [d.node_token for d in result] == ["a1", "a2"]
+    assert all(d.url == f"https://feishu.cn/wiki/{d.node_token}" for d in result)
+
+
+# ---------------------------------------------------------------------------
+# 429 retry flows through to read operations
+# ---------------------------------------------------------------------------
+
+def test_429_retry_in_read_op():
+    """list_raw_docs benefits from _run_lark's 429 exponential-backoff retry."""
+    conn = WikiConnector("space-1", "raw-root", "agent-root")
+    err = MagicMock()
+    err.returncode = 1
+    err.stderr = "error: HTTP 429 Too Many Requests"
+    nodes = [
+        {"node_token": "n1", "obj_token": "o1", "title": "Doc 1", "obj_type": "docx",
+         "obj_edit_time": "1700000000", "parent_node_token": "raw-root",
+         "has_child": False},
+    ]
+    ok = _ok(json.dumps({"data": {"nodes": nodes}}))
+
+    with patch("subprocess.run", side_effect=[err, err, ok]) as mock_run, \
+            patch("time.sleep") as mock_sleep:
+        result = conn.list_raw_docs()
+
+    # 1 initial attempt + 2 retries (429 twice, then success).
+    assert mock_run.call_count == 3
+    assert mock_sleep.call_count == 2
+    assert [c.args[0] for c in mock_sleep.call_args_list] == [1, 2]
+    assert len(result) == 1
+    assert result[0].node_token == "n1"
