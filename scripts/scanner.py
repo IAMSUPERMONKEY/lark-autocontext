@@ -20,6 +20,26 @@ if sys.platform == "win32" and sys.stdout.encoding.lower() not in ("utf-8", "utf
 from cli import LarkCLI
 
 
+def _get_wiki_connector():
+    """Create a WikiConnector from config.json. Returns None if not configured."""
+    try:
+        config_path = os.path.join(os.path.dirname(__file__), "config.json")
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        wiki = config.get("wiki", {})
+        if not wiki.get("space_id"):
+            return None
+        from wiki_connector import WikiConnector
+        return WikiConnector(
+            space_id=wiki["space_id"],
+            raw_node_token=wiki.get("raw_node_token", ""),
+            agent_node_token=wiki.get("agent_node_token", ""),
+            identity=config.get("identity", "user"),
+        )
+    except (FileNotFoundError, json.JSONDecodeError, KeyError):
+        return None
+
+
 def is_feishu_doc(url):
     return "feishu.cn/docx/" in url or "larksuite.com/docx/" in url
 
@@ -140,8 +160,46 @@ def list_changed(sources, since):
     return {"changed": changed, "source_results": source_results}
 
 
-def scan_single_doc(url, cli=None):
-    """Extract content from a single Feishu document URL."""
+def scan_single_doc(url, cli=None, use_wiki=False, wiki_connector=None):
+    """Extract content from a single Feishu document URL.
+
+    Args:
+        url: Feishu doc URL (folder mode) or wiki node URL/token (wiki mode)
+        cli: LarkCLI instance (folder mode)
+        use_wiki: If True, use WikiConnector instead of LarkCLI
+        wiki_connector: WikiConnector instance (if None and use_wiki=True,
+            will try to create one from config.json)
+    """
+    if use_wiki:
+        if wiki_connector is None:
+            wiki_connector = _get_wiki_connector()
+        if wiki_connector is None:
+            return {"error": "Wiki mode not configured. Set wiki.space_id in config.json"}
+
+        # Extract node_token from URL or use as-is.
+        # Wiki URLs look like: https://feishu.cn/wiki/{node_token}
+        node_token = url
+        if "/wiki/" in url:
+            match = re.search(r'wiki/([a-zA-Z0-9_]+)', url)
+            node_token = match.group(1) if match else url
+
+        try:
+            content = wiki_connector.fetch_doc_content(node_token)
+            meta = wiki_connector.fetch_doc_meta(node_token)
+            return {
+                "source_type": "wiki_doc",
+                "doc_token": node_token,
+                "node_token": node_token,
+                "title": meta.title,
+                "url": url,
+                "content": content,
+                "fetched_at": datetime.now().isoformat(),
+                "last_modified": meta.modified_time,
+            }
+        except Exception as e:
+            return {"error": str(e), "hint": f"Failed to fetch wiki node {node_token}"}
+
+    # Legacy folder mode (existing behaviour unchanged)
     if cli is None:
         cli = LarkCLI()
 
@@ -189,8 +247,53 @@ def scan_single_doc(url, cli=None):
         }
 
 
-def scan_batch(config_path=None, cli=None):
-    """Scan all sources defined in scan_config.json."""
+def scan_batch(config_path=None, cli=None, use_wiki=False, wiki_connector=None):
+    """Scan all sources. In wiki mode, scans the raw docs area.
+
+    Args:
+        config_path: Path to scan_config.json (folder mode only)
+        cli: LarkCLI instance (folder mode)
+        use_wiki: If True, use WikiConnector to scan wiki raw area
+        wiki_connector: WikiConnector instance
+    """
+    if use_wiki:
+        if wiki_connector is None:
+            wiki_connector = _get_wiki_connector()
+        if wiki_connector is None:
+            return {"error": "Wiki mode not configured"}
+
+        documents = []
+        errors = []
+        try:
+            docs = wiki_connector.list_raw_docs()
+            for doc in docs:
+                if doc.obj_type == "docx":
+                    try:
+                        content = wiki_connector.fetch_doc_content(doc.node_token)
+                        documents.append({
+                            "source_type": "wiki_doc",
+                            "doc_token": doc.node_token,
+                            "node_token": doc.node_token,
+                            "title": doc.title,
+                            "url": doc.url,
+                            "content": content,
+                            "source_name": "wiki_raw",
+                            "fetched_at": datetime.now().isoformat(),
+                            "last_modified": doc.modified_time,
+                        })
+                    except Exception as e:
+                        errors.append({"node_token": doc.node_token, "error": str(e)})
+        except Exception as e:
+            return {"error": str(e)}
+
+        return {
+            "scanned_at": datetime.now().isoformat(),
+            "total_documents": len(documents),
+            "documents": documents,
+            "errors": errors,
+        }
+
+    # Legacy folder mode (existing behaviour unchanged)
     if cli is None:
         cli = LarkCLI()
 
@@ -336,6 +439,8 @@ def main():
     parser.add_argument('--list-changed', action='store_true',
                         help='List changed documents since --since')
     parser.add_argument('--since', help='ISO 8601 timestamp for incremental scan')
+    parser.add_argument('--wiki', action='store_true',
+                        help='Use wiki mode (scan wiki raw docs area)')
     args = parser.parse_args()
 
     if args.list_changed:
@@ -350,11 +455,11 @@ def main():
         result = list_changed(sources, since=args.since or "2000-01-01T00:00:00+08:00")
         print(json.dumps(result, ensure_ascii=False, indent=2))
     elif args.doc:
-        result = scan_single_doc(args.doc)
+        result = scan_single_doc(args.doc, use_wiki=args.wiki)
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
         # Batch mode (default)
-        result = scan_batch()
+        result = scan_batch(use_wiki=args.wiki)
         print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
