@@ -708,6 +708,16 @@ def write_okf_document(classified_data, raw_content="", skip_visualize=False):
     # In batch mode (skip_visualize=True), caller handles viz generation once at end.
     viz_path = None if skip_visualize else _auto_visualize(bundle_path)
 
+    # After the OKF file is written to disk, update the search index
+    # (best-effort). Index update failure should not break the main write flow.
+    try:
+        from query_engine import QueryEngine
+        engine = QueryEngine(bundle_path)
+        engine.update_index(target_path)
+    except Exception as e:
+        import logging
+        logging.debug(f"Index update skipped: {e}")
+
     return {
         "action": action,
         "file_path": os.path.relpath(target_path, bundle_path),
@@ -715,6 +725,99 @@ def write_okf_document(classified_data, raw_content="", skip_visualize=False):
         "title": title,
         "viz_html": viz_path,
     }
+
+
+def generate_index_pages(bundle_path=None):
+    """Generate navigation index pages for the bundle.
+
+    Scans all .md files in the bundle, groups them by project and type,
+    and generates index.md files for navigation.
+
+    Args:
+        bundle_path: Path to the bundle directory. If None, uses default from config.
+
+    Returns:
+        dict: {"projects_index": path, "total_docs": count}
+    """
+    from wiki_connector import _parse_frontmatter
+
+    if bundle_path is None:
+        config_path = os.path.join(os.path.dirname(__file__), "config.json")
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+            bundle_path = config.get("bundle_path", os.path.join(os.path.dirname(__file__), "..", "bundle"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            bundle_path = os.path.join(os.path.dirname(__file__), "..", "bundle")
+
+    # Scan all .md files (skip hidden dirs, index.md, log.md)
+    docs_by_project = {}  # {project: [(path, title, type), ...]}
+    docs_by_type = {}     # {type: [(path, title, project), ...]}
+    all_people = {}       # {name: [paths]}
+    all_concepts = {}     # {concept: [paths]}
+
+    for root, dirs, files in os.walk(bundle_path):
+        # Skip hidden directories
+        dirs[:] = [d for d in dirs if not d.startswith('.')]
+        for fname in files:
+            if not fname.endswith('.md'):
+                continue
+            if fname in ('index.md', 'log.md'):
+                continue
+            fpath = os.path.join(root, fname)
+            try:
+                with open(fpath, "r", encoding="utf-8") as f:
+                    file_content = f.read()
+                fm, _ = _parse_frontmatter(file_content)
+                title = fm.get("title", fname)
+                doc_type = fm.get("type", "Other")
+                project = fm.get("project", "ungrouped")
+                people = fm.get("people", [])
+                concepts = fm.get("concepts", [])
+
+                rel_path = os.path.relpath(fpath, bundle_path)
+
+                docs_by_project.setdefault(project, []).append((rel_path, title, doc_type))
+                docs_by_type.setdefault(doc_type, []).append((rel_path, title, project))
+
+                for p in (people if isinstance(people, list) else [people]):
+                    if p:
+                        all_people.setdefault(p, []).append(rel_path)
+                for c in (concepts if isinstance(concepts, list) else [concepts]):
+                    if c:
+                        all_concepts.setdefault(c, []).append(rel_path)
+            except Exception:
+                continue
+
+    # Generate projects index
+    projects_index_path = os.path.join(bundle_path, "projects", "index.md")
+    os.makedirs(os.path.dirname(projects_index_path), exist_ok=True)
+    with open(projects_index_path, "w", encoding="utf-8") as f:
+        f.write("# Projects Index\n\n")
+        for project in sorted(docs_by_project.keys()):
+            f.write(f"## {project}\n\n")
+            for path, title, doc_type in sorted(docs_by_project[project]):
+                f.write(f"- [{title}]({path}) ({doc_type})\n")
+            f.write("\n")
+        # People section
+        if all_people:
+            f.write("## People\n\n")
+            for person in sorted(all_people.keys()):
+                f.write(f"- {person} ({len(all_people[person])} docs)\n")
+            f.write("\n")
+        # Concepts section
+        if all_concepts:
+            f.write("## Concepts\n\n")
+            for concept in sorted(all_concepts.keys()):
+                f.write(f"- {concept} ({len(all_concepts[concept])} docs)\n")
+
+    total_docs = sum(len(v) for v in docs_by_project.values())
+
+    return {
+        "projects_index": projects_index_path,
+        "total_docs": total_docs,
+    }
+
 
 
 def main():

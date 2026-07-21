@@ -11,5 +11,12 @@
     "_base_token_note": "Optional: Feishu Bitable token, only needed if you visualize via Bitable."
   },
 
+  "wiki": {
+    "space_id": "",
+    "raw_node_token": "",
+    "agent_node_token": "",
+    "_wiki_note": "Wiki space upgrade (Task 15+). space_id: Feishu wiki space ID. raw_node_token: root node of raw docs (read area). agent_node_token: root node of agent-maintained docs (write area). Leave all empty for folder-only mode."
+  },
+
   "_scan_config_note": "Sources for batch scan are configured separately in scripts/scan_config.json (see scan_config.json.example)."
 }

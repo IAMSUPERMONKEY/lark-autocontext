@@ -1,7 +1,7 @@
 ---
 name: lark-autocontext
 description: |
-  Trigger when user mentions ANY of: 保存上下文 / 存入上下文 / 业务记忆 / 项目知识 / 存入知识库 / lark-autocontext / /lark-autocontext / 保存到业务上下文 / 扫描飞书 / 同步飞书知识.
+  Trigger when user mentions ANY of: 保存上下文 / 存入上下文 / 业务记忆 / 项目知识 / 存入知识库 / lark-autocontext / /lark-autocontext / 保存到业务上下文 / 扫描飞书 / 同步飞书知识 / 同步飞书知识库 / 搜索知识库 / 查询知识库 / 问一下知识库 / 查一下业务.
   Also trigger when: user sends a Feishu doc/sheet link with intent to store or remember.
   Supports: save single document, batch scan Feishu sources, retrieve project history, ask cross-project questions.
   If config.json is missing, guide first-time setup automatically.
@@ -27,7 +27,38 @@ description: |
 4. **Check bundle initialized:** Verify `bundle/index.md` exists.
    - If missing → Run `python scripts/init_bundle.py` first.
 
-Only after ALL 4 checks pass, proceed to the requested workflow.
+5. **Check wiki config (if wiki mode):** If `config.json` has `wiki.space_id`, verify `raw_node_token` and `agent_node_token` are also set.
+   - If missing → Tell user: "Wiki 模式配置不完整，运行 `python scripts/migrate_to_wiki.py --space-id <id> --raw-node <token> --agent-node <token>` 或手动编辑 config.json 的 wiki 字段"
+
+6. **Check FTS5 search index (if wiki mode):** Verify `bundle/.index/search.db` exists.
+   - If missing → Run `python scripts/query_engine.py rebuild` 从已有 OKF 文件构建索引。
+
+Only after ALL checks pass, proceed to the requested workflow.
+
+---
+
+## Wiki Mode vs Folder Mode
+
+**Wiki 模式是 opt-in。** 当且仅当 `config.json` 配置了 `wiki.space_id` 字段时，wiki 模式生效；否则使用 legacy folder 模式。两种模式都必须支持，文档并存。
+
+### Wiki 模式架构
+
+- **Raw docs area（人类写入区）**：由 `wiki.raw_node_token` 指定。人类把原始飞书文档丢进这个 Wiki Space 节点下，AI Agent 只读不写。
+- **Agent maintenance area（Agent 维护区）**：由 `wiki.agent_node_token` 指定。AI Agent 把结构化 OKF 输出写到这里，供人类阅读。
+- **Local bundle（本地 OKF Markdown）**：仍然保留，用于快速查询和 FTS5 全文检索。飞书侧仅用于人类可读性。
+- **双向同步 + 冲突解决**：采用 "Feishu wins + local backup" 策略——当文档在两侧都被编辑时，拉取飞书版本，本地版本备份到 `bundle/.conflicts/`。
+
+### Folder 模式（legacy）
+
+完全保留不变。`config.json` 没有 `wiki.space_id` 时，所有 Workflow 走原有的 folder/scan_config 路径。Wiki 模式是增量能力，不破坏现有行为。
+
+### 从 folder 模式迁移到 wiki 模式
+
+```bash
+python scripts/migrate_to_wiki.py --space-id <space_id> --raw-node <raw_node_token> --agent-node <agent_node_token>
+```
+
+迁移脚本会：备份 `config.json` → 写入 `wiki.space_id` / `raw_node_token` / `agent_node_token` → 保留所有现有字段。迁移后按提示运行 `onboarding.py` 验证、`query_engine.py rebuild` 重建索引、`scanner.py --wiki` 测试 wiki 扫描。
 
 ---
 
@@ -236,7 +267,8 @@ Batch scanning requires `scripts/scan_config.json` (created automatically by `se
 **Trigger:** User sends a Feishu doc/sheet link with save intent, or says "保存这个文档 <link>".
 
 ### Step A1: Extract Document Content (主对话)
-- Run `python scripts/scanner.py --doc "<url>"`.
+- **Folder 模式：** Run `python scripts/scanner.py --doc "<url>"`.
+- **Wiki 模式：** Run `python scripts/scanner.py --doc "<url>" --wiki`. Scanner 通过 `WikiConnector.fetch_doc_content()` 提取正文、`WikiConnector.fetch_doc_meta()` 提取元信息。
 - The script extracts content from Feishu and returns JSON with `source_type`, `doc_token`, `title`, `url`, `content`.
 - **主对话保留 scanner 输出**，作为 subagent 的输入和验收的基准。
 
@@ -301,6 +333,30 @@ Task(subagent_type="general_purpose_task",
 - 检查 okf_writer 输出的 JSON，确认 `status: "created"` 或 `"updated"`。
 - 清理临时文件。
 
+### Step A4.5: Sync to Feishu (wiki 模式专属)
+> 仅当 `config.json` 配置了 `wiki.space_id` 时执行。Folder 模式跳过本步。
+
+OKF 写入本地后，把结构化输出同步到飞书 Agent 区，供人类阅读（飞书版本用 emoji 元数据头替代 YAML frontmatter）。
+
+**主对话操作**：运行一段 Python 片段，调用 `DualStorage.sync_to_feishu(okf_path, okf_content)`：
+
+```python
+import json, sys
+sys.path.insert(0, "scripts")
+from dual_storage import DualStorage
+from scanner import _get_wiki_connector
+
+cfg = json.load(open("scripts/config.json"))
+conn = _get_wiki_connector()  # 从 config.json 读取 wiki 配置构建 WikiConnector
+storage = DualStorage(cfg["bundle_path"], wiki_connector=conn)
+# okf_path: okf_writer 返回的 file_path（相对 bundle 的路径）
+# okf_content: 写入的 OKF Markdown 全文（含 frontmatter）
+result = storage.sync_to_feishu(okf_path, okf_content)
+print(result)  # SyncResult(success, action=created/updated, node_token, feishu_url)
+```
+
+`sync_to_feishu` 会：解析 frontmatter 取 title → `okf_to_feishu_content` 转换（剥掉 YAML frontmatter，加 emoji 元数据头）→ 查 `sync_state.json` 决定 `create_doc` 还是 `update_doc` → 成功后更新 sync_state。
+
 ### Step A5: Show Save Summary
 ```
 ✅ 已保存到 OKF Bundle
@@ -317,6 +373,8 @@ Task(subagent_type="general_purpose_task",
 ### Step A6: Commit to Git
 - Run `git add bundle/` and `git commit -m "docs: save {title} to OKF Bundle"`.
 
+> **索引自动更新**：`okf_writer` 写入 OKF 文件后自动调用 `query_engine.QueryEngine.update_index(target_path)`，FTS5 索引无需手动维护。
+
 ---
 
 ## Workflow B: Batch Scan
@@ -324,7 +382,8 @@ Task(subagent_type="general_purpose_task",
 **Trigger:** User says "扫描飞书文档" / "同步飞书知识" / "批量导入".
 
 ### Step B1: Run Scanner (主对话)
-- Run `python scripts/scanner.py` (reads scan_config.json automatically).
+- **Folder 模式：** Run `python scripts/scanner.py` (reads scan_config.json automatically).
+- **Wiki 模式：** Run `python scripts/scanner.py --wiki`. Scanner 通过 `WikiConnector.list_raw_docs()` 列出 raw 区所有文档，再逐篇 `fetch_doc_content()` 拉取。
 - The script scans all configured Feishu sources and returns JSON with `documents` array.
 - **主对话保留 scanner 输出**，作为 subagent 输入和验收基准。
 
@@ -394,6 +453,9 @@ Task(subagent_type="general_purpose_task",
 > - 旧方式（逐篇）：10 篇 = 10 次 Python 启动 + 10 次 viz.html 生成
 > - 新方式（批量）：10 篇 = 1 次 Python 启动 + 1 次 viz.html 生成
 
+### Step B4.5: Sync to Feishu (wiki 模式专属)
+> 仅当 wiki 模式生效时执行。对 B4 批量写入的每一篇 OKF 文档，调用 `DualStorage.sync_to_feishu(okf_path, okf_content)` 同步到飞书 Agent 区。调用方式同 Workflow A Step A4.5；批量场景下可在同一 Python 进程内循环调用，复用同一个 `DualStorage` 实例。
+
 ### Step B5: Show Scan Summary
 ```
 ✅ 扫描完成
@@ -414,26 +476,41 @@ Task(subagent_type="general_purpose_task",
 
 **Trigger:** User asks a question about stored context.
 
+> 搜索基于 SQLite FTS5 全文检索，支持 CJK 分词（连续中文字符会被正确切分为单字 token）。命令统一用 `query_engine.py`（旧 `query.py` 仅作 substring fallback 保留）。
+
 ### Mode 1: Project-Scoped Query
 When user mentions a specific project (e.g., "lark-autocontext项目里关于 XX 的信息"):
-- Run `python scripts/query.py --project "<project_name>" --keyword "<keyword>"`.
-- Parse the JSON results and answer the user's question.
+- Run `python scripts/query_engine.py search --query "<keyword>" --project "<project_name>" --top-n 10`.
+- Parse the JSON results (`matches` 数组，含 `title` / `doc_type` / `score` / `snippet` / `local_path`) and answer the user's question.
 - Include `resource` links for traceability.
 
 ### Mode 2: Global Search
 When user asks an open-ended question (e.g., "最近有什么关于 OKF 的讨论？"):
-- Run `python scripts/query.py --keyword "<keyword>"`.
-- Results are sorted by timestamp descending.
-- Synthesize a coherent answer from multiple sources.
+- Run `python scripts/query_engine.py search --query "<keyword>" --top-n 10`.
+- Results 按综合得分（FTS 相关度 × 0.6 + 时间衰减 × 0.2 + 类型权重 × 0.2）降序排列。
+- 默认开启 deep read，`context` 字段已拼装好匹配文档全文供 Agent 直接使用。
 
 ### Mode 3: Type Filter
 When user asks for a specific type (e.g., "给我所有会议纪要"):
-- Run `python scripts/query.py --type "Meeting Minutes"`.
+- Run `python scripts/query_engine.py search --query "*" --type "Meeting Minutes"`.
+- 也可叠加 tags 过滤：`--tags "tag1,tag2"`。
 - Return the list of matching documents.
 
+### Mode 4: Bidirectional Sync Check (wiki 模式专属)
+当用户问 "飞书那边有没有更新" / "飞书上改了什么" / 类似意图时：
+1. Run `python scripts/auto_sync.py list-only` 自动检测 raw 区变更（wiki 模式下脚本从 config.json 识别并调用 `WikiConnector.list_raw_docs(since=last_scan)`）。
+2. 调用 `DualStorage.detect_feishu_edits()` 识别 Agent 区哪些文档被人类在飞书侧编辑过，返回 `SyncItem` 列表（`action_needed="pull"` 或 `"unknown"`）。
+3. 对需要拉取的文档调 `DualStorage.pull_from_feishu(node_token)`。
+
+### Other Commands
+- **带结构化过滤：** `python scripts/query_engine.py search --query "<keyword>" --project "<project>" --type "<type>" --tags "tag1,tag2" --people "<name>"`。
+- **Deep read 模式：** `python scripts/query_engine.py search --query "<keyword>"`（deep read 默认开启，`context` 字段含匹配文档全文；加 `--no-deep-read` 关闭，仅返回 snippet 用于快速浏览）。
+- **重建索引：** `python scripts/query_engine.py rebuild`。
+- **索引状态：** `python scripts/query_engine.py status`。
+
 ### Getting Full Content
-- Query results include `body_preview` (first 200 chars) and `file_path`.
-- When full content is needed, Read the .md file at `bundle/{file_path}`.
+- Search 结果的 `matches` 含 `snippet`（FTS5 高亮摘录）和 `local_path`。
+- 默认 deep read 模式下 `context` 字段已包含匹配文档全文；关闭 deep read 时，需要全文则 Read `.md` 文件 at `bundle/{local_path}`。
 
 ---
 
@@ -443,8 +520,9 @@ When user asks for a specific type (e.g., "给我所有会议纪要"):
 
 ### Step D1: List Changed Documents (主对话)
 - Run `python scripts/auto_sync.py list-only --config config.json`.
+- **Wiki 模式：** 脚本自动从 `config.json` 识别 wiki 模式，调用 `WikiConnector.list_raw_docs(since=last_scan)` 列出 raw 区自上次扫描以来变更的文档（folder 模式仍走 scan_config.json）。
 - This produces `.auto_sync/pending_changes.json` with all changed docs since last sync.
-- 主对话读取变更列表，逐篇调 `scanner.py --doc` 拉取完整内容。
+- 主对话读取变更列表，逐篇调 `scanner.py --doc "<url>" --wiki`（wiki 模式）或 `scanner.py --doc "<url>"`（folder 模式）拉取完整内容。
 
 ### Step D2: Classify via Subagent + 验收 + Write (subagent 分类，主对话验收+写入)
 
@@ -457,10 +535,12 @@ When user asks for a specific type (e.g., "给我所有会议纪要"):
 4. **主对话**：验收通过后，组装 `_batch.json` 用 `--batch-file` 批量写入（同 Workflow B Step B4）。
    - People/Concept/entities 自动 upsert，保留 `# Profile` / `# Definition` 区段。
    - viz.html 只在所有文档写入完成后生成一次。
+5. **主对话（wiki 模式专属）**：对每篇写入的 OKF 文档，调 `DualStorage.sync_to_feishu(okf_path, okf_content)` 同步到飞书 Agent 区（同 Workflow A Step A4.5）。
 
 ### Step D3: Finalize (主对话)
 - Run `python scripts/auto_sync.py finalize --commit`.
 - This updates `.auto_sync/state.json` watermarks and commits to git.
+- **Wiki 模式额外步骤**：运行 `DualStorage.detect_feishu_edits()` 检查飞书侧是否有人类编辑与本地变更冲突。若发现冲突，本地版本备份到 `bundle/.conflicts/`，飞书版本胜出（被拉取覆盖本地）。
 
 ### Step D4: Summary
 ```
@@ -473,6 +553,38 @@ When user asks for a specific type (e.g., "给我所有会议纪要"):
 > 批量模式下 viz.html 只在所有文档写入完成后生成一次。
 
 **幂等保证:** 同一 `resource`（doc_token）重跑不会产生重复条目；人工编辑过的 `# Profile` / `# Definition` 区段不会被覆盖。
+
+**冲突解决策略（wiki 模式）："Feishu wins + local backup"** —— 当一份文档在本地和飞书侧都被编辑时，拉取飞书版本覆盖本地，本地旧版本备份到 `bundle/.conflicts/{node_token}_{timestamp}.md`，并在 `bundle/.conflicts/log.md` 追加一条结构化记录（含 node_token / local_path / backup 文件名）。
+
+---
+
+## Query Engine (FTS5 Search)
+
+`scripts/query_engine.py` 提供 SQLite FTS5 全文检索 + 渐进式 RAG，是 Workflow C 的底层引擎。
+
+- **渐进式 RAG（三段式查询）：**
+  1. **FTS5 召回** —— 对预处理后的 query 做全文匹配（`documents_fts MATCH ?`）。
+  2. **结构化过滤** —— 在 Python 侧按 `project` / `doc_type` / `tags` / `people` / 日期区间过滤。
+  3. **Deep read** —— 读取 top-N 匹配文档全文 + 一层 mentions，拼装成 `context` 字符串供 Agent 直接使用（上限 8000 字符）。
+- **综合得分：** `FTS_rank × 0.6 + time_decay × 0.2 + type_weight × 0.2`。
+  - FTS 相关度：`bm25()` 归一化为 `1.0 / (1.0 + abs(rank))`。
+  - 时间衰减：≤30d=1.0，≤90d=0.8，≤180d=0.5，其余 0.3。
+  - 类型权重：Meeting Minutes/Decision=1.0，Requirement=0.9，Review/Review Report=0.8，Reference=0.7，其余 0.6。
+- **CJK 支持：** 索引和查询都会在连续中文字符之间插入空格（正则 `([\u4e00-\u9fff\u3400-\u4dbf])(?=[\u4e00-\u9fff\u3400-\u4dbf])` → `\1 `），让 `unicode61` tokenizer 把每个汉字切成独立 token，否则整段中文会被当成一个 token、单字查询永远命中不了。
+- **CLI 命令：** `search` / `rebuild` / `status`（输出均为 JSON）。详见 Workflow C。
+- **索引位置：** `bundle/.index/search.db`（FTS5 虚拟表 `documents_fts` + 元数据表 `documents` + 同步触发器）。
+- **自动索引：** `okf_writer` 每次写入 OKF 文件后自动调 `QueryEngine.update_index(target_path)`（best-effort，失败只记 debug 日志，不阻断写入）。首次使用或大量变更后可手动 `python scripts/query_engine.py rebuild` 全量重建。
+
+## Bidirectional Sync
+
+`scripts/dual_storage.py` 的 `DualStorage` 类负责本地 bundle 与飞书 Wiki 之间的双向同步（wiki 模式专属）。
+
+- **sync_state.json：** 每篇文档的同步状态记录在 `bundle/.sync_state.json`（原子写入，损坏时自动回退为空状态）。每条记录含 `local_path` / `feishu_node_token` / `feishu_url` / `local_content_hash` / `feishu_modified_time` / `local_modified_time` / `sync_direction` / `last_sync_at`。
+- **同步方向（`SyncDirection`）：** `IN_SYNC`（两侧一致）/ `LOCAL_NEWER`（本地新，需 push）/ `FEISHU_NEWER`（飞书新，需 pull）/ `CONFLICT`（两侧都改，需解决）。
+- **Push（本地 → 飞书）：** `DualStorage.sync_to_feishu(okf_path, okf_content)` —— 解析 frontmatter 取 title → `okf_to_feishu_content` 转换（剥 YAML frontmatter、加 emoji 元数据头）→ 查 sync_state 决定 `WikiConnector.create_doc` 还是 `update_doc` → 成功后更新 sync_state（`sync_direction=in_sync`）。失败时不更新 sync_state，文档保持 `local_newer` 下次重试。
+- **Pull（飞书 → 本地）：** `DualStorage.pull_from_feishu(node_token)` —— `fetch_doc_content` 拉飞书内容 → `feishu_to_okf_body` 转回 OKF body（剥 emoji 头、清理）→ 复用本地原 frontmatter 拼回完整 OKF → 写入本地 → 更新 sync_state。
+- **冲突解决：** "Feishu wins + local backup" —— pull 时比对 sync_state 记录的 `local_content_hash` 与本地文件实际 hash，不一致则把本地旧版本备份到 `bundle/.conflicts/{node_token}_{timestamp}.md` 并在 `log.md` 记录，再覆盖本地。
+- **检测飞书侧编辑：** `DualStorage.detect_feishu_edits()` —— `list_agent_docs()` 列出 Agent 区全部文档，逐篇比对 sync_state 中记录的 `feishu_modified_time`，返回需要 pull 的 `SyncItem` 列表（`action_needed="pull"` 或 `"unknown"`）。
 
 ---
 
@@ -661,7 +773,9 @@ bundle/
 │       ├── requirements/
 │       └── ...
 ├── concepts/             # Cross-project concepts
-└── people/               # People info
+├── people/               # People info
+├── .index/               # FTS5 search index (search.db) — wiki mode
+└── .conflicts/           # Conflict backups + log.md — wiki mode
 ```
 
 ## Pitfalls & Lessons Learned
@@ -679,6 +793,8 @@ bundle/
 | 不读文档内容就分类 | people/key_points/decisions 全是空的，图谱无意义 | Agent 必须完整读取 scanner 输出再分类 |
 | 用位置参数传长 JSON 给 okf_writer | 命令行长度限制 + 转义地狱，必然出错 | 用 `--classified-file` + `--content-file` |
 | 不配 scan_config.json 就跑 | 里面还是占位符，scanner 会卡死或报错 | 运行 `setup.py`，粘贴飞书链接自动配置 |
+| 在 wiki 模式下不 sync 到飞书 | Agent 区只有本地 OKF，人类看不到结构化输出 | 写入 OKF 后调 `DualStorage.sync_to_feishu()` |
+| 不 rebuild 索引就搜索 | FTS5 索引为空，搜索无结果 | 首次使用或大量变更后运行 `python scripts/query_engine.py rebuild` |
 
 ### 技术注意事项
 
@@ -701,6 +817,10 @@ bundle/
 | 扫描配置缺失 | 运行 `python scripts/setup.py`，粘贴飞书链接自动配置 |
 | 查询无结果 | 先保存文档或运行批量扫描 |
 | 提取失败 | 检查文档链接格式是否正确（应为 feishu.cn/docx/xxx） |
+| Wiki 模式未配置 | 运行 `python scripts/migrate_to_wiki.py --space-id <id> --raw-node <token> --agent-node <token>` |
+| 搜索索引缺失 | 运行 `python scripts/query_engine.py rebuild` |
+| 搜索无结果 | 索引可能为空。运行 `python scripts/query_engine.py rebuild` 从已有 OKF 文件重建索引 |
+| 同步冲突 | 本地版本已备份到 `bundle/.conflicts/`，查看 `log.md` 了解详情。飞书版本已被拉取覆盖本地 |
 
 ### ⚠️ Windows 用户注意
 

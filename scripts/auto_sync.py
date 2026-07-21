@@ -14,6 +14,7 @@ if sys.platform == "win32" and sys.stdout.encoding.lower() not in ("utf-8", "utf
 # Default paths (can be monkeypatched in tests)
 PENDING_PATH = ".auto_sync/pending_changes.json"
 STATE_PATH = ".auto_sync/state.json"
+MAIN_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.json")
 
 
 def _now_iso():
@@ -57,22 +58,71 @@ def update_source_state(state, source_key, success, scan_at, error=None):
 
 
 def cmd_list_only(args):
-    """Scan all sources, write pending_changes.json. Does NOT update state."""
-    from scanner import list_changed
+    """Scan all sources, write pending_changes.json. Does NOT update state.
 
+    In wiki mode (config.json has wiki.space_id), uses WikiConnector.list_raw_docs()
+    instead of scanner.list_changed().
+    """
     state = load_state(STATE_PATH)
-    with open(args.config, "r", encoding="utf-8") as f:
-        config = json.load(f)
     scan_at = _now_iso()
-    all_changes = []
-    source_scans = {}
-    for src in config.get("sources", []):
-        key = src.get("key") or f"{src.get('type')}:{src.get('token', '')}"
-        since = state.get("sources", {}).get(key, {}).get("last_scan_at") or None
-        result = list_changed([src], since=since or "2000-01-01T00:00:00+08:00")
-        all_changes.extend(result.get("changed", []))
-        source_scans[key] = scan_at
 
+    # Check for wiki mode
+    use_wiki = False
+    wiki_config = {}
+    if os.path.exists(MAIN_CONFIG_PATH):
+        try:
+            with open(MAIN_CONFIG_PATH, "r", encoding="utf-8") as f:
+                main_config = json.load(f)
+            wiki_config = main_config.get("wiki", {})
+            if wiki_config.get("space_id"):
+                use_wiki = True
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    if use_wiki:
+        # Wiki mode: use WikiConnector to list changed raw docs
+        from scanner import _get_wiki_connector
+        conn = _get_wiki_connector()
+        if conn is None:
+            print("[auto_sync] wiki mode configured but connector creation failed")
+            return 1
+
+        # Get last scan time from state
+        wiki_key = f"wiki:{wiki_config.get('space_id')}"
+        since = state.get("sources", {}).get(wiki_key, {}).get("last_scan_at") or None
+
+        try:
+            docs = conn.list_raw_docs(since=since)
+            all_changes = []
+            for doc in docs:
+                all_changes.append({
+                    "doc_token": doc.node_token,
+                    "node_token": doc.node_token,
+                    "url": doc.url,
+                    "title": doc.title,
+                    "edited_time": doc.modified_time,
+                    "source": wiki_key,
+                    "source_type": "wiki_doc",
+                })
+            source_scans = {wiki_key: scan_at}
+        except Exception as e:
+            print(f"[auto_sync] wiki list_raw_docs failed: {e}")
+            return 1
+    else:
+        # Legacy folder mode (existing code)
+        from scanner import list_changed
+        with open(args.config, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        all_changes = []
+        source_scans = {}
+        for src in config.get("sources", []):
+            key = src.get("key") or f"{src.get('type')}:{src.get('token', '')}"
+            since = state.get("sources", {}).get(key, {}).get("last_scan_at") or None
+            result = list_changed([src], since=since or "2000-01-01T00:00:00+08:00")
+            all_changes.extend(result.get("changed", []))
+            source_scans[key] = scan_at
+
+    # Write pending_changes.json (same for both modes)
     os.makedirs(os.path.dirname(PENDING_PATH) or ".", exist_ok=True)
     with open(PENDING_PATH, "w", encoding="utf-8") as f:
         json.dump({

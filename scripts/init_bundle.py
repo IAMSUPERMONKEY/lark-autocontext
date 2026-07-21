@@ -38,6 +38,10 @@ def init_bundle(bundle_path=None):
     for d in dirs_to_create:
         os.makedirs(d, exist_ok=True)
 
+    # Create index and conflicts directories for wiki upgrade
+    os.makedirs(os.path.join(bundle_path, ".index"), exist_ok=True)
+    os.makedirs(os.path.join(bundle_path, ".conflicts"), exist_ok=True)
+
     # Create index.md files
     root_index_content = '''---
 okf_version: "0.1"

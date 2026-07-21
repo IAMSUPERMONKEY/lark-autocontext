@@ -25,4 +25,9 @@ query_temp.json
 viz.html
 
 # Internal design docs (not for public)
-docs/superpowers/
+# docs/superpowers/  # unignore for design spec tracking
+
+# Wiki upgrade artifacts
+bundle/.index/search.db
+bundle/.sync_state.json
+bundle/.conflicts/

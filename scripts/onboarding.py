@@ -16,6 +16,70 @@ if sys.platform == "win32" and sys.stdout.encoding.lower() not in ("utf-8", "utf
 from cli import LarkCLI
 
 
+def _check_wiki_config(config: dict) -> list:
+    """Check wiki configuration and return status lines.
+
+    Returns a list of status strings. When ``wiki.space_id`` is set, reports
+    the configured state plus WARN lines for any missing tokens. When
+    ``space_id`` is absent/empty, reports folder mode.
+    """
+    lines = []
+    wiki = config.get("wiki", {})
+    if wiki.get("space_id"):
+        lines.append("  [OK] Wiki mode: space_id configured")
+        if wiki.get("raw_node_token"):
+            lines.append("  [OK] Wiki raw_node_token configured")
+        else:
+            lines.append("  [WARN] Wiki raw_node_token not set")
+        if wiki.get("agent_node_token"):
+            lines.append("  [OK] Wiki agent_node_token configured")
+        else:
+            lines.append("  [WARN] Wiki agent_node_token not set")
+    else:
+        lines.append("  [INFO] Wiki mode: not configured (folder mode)")
+    return lines
+
+
+def _check_fts5() -> list:
+    """Check SQLite FTS5 availability and return status lines.
+
+    Probes an in-memory FTS5 virtual table creation. Returns an [OK] line
+    on success or an [ERROR] line on failure.
+    """
+    import sqlite3
+    lines = []
+    try:
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE VIRTUAL TABLE test_fts5 USING fts5(content)")
+        conn.close()
+        lines.append("  [OK] SQLite FTS5 available")
+    except Exception:
+        lines.append("  [ERROR] SQLite FTS5 not available — search engine will not work")
+    return lines
+
+
+def _check_search_index(bundle_path: str) -> list:
+    """Check for the search index database and return status lines."""
+    lines = []
+    index_dir = os.path.join(bundle_path, ".index")
+    if os.path.exists(os.path.join(index_dir, "search.db")):
+        lines.append("  [OK] Search index exists (.index/search.db)")
+    else:
+        lines.append("  [INFO] Search index not built yet (run: python scripts/query_engine.py rebuild)")
+    return lines
+
+
+def _check_sync_state(bundle_path: str) -> list:
+    """Check for the sync state file and return status lines."""
+    lines = []
+    sync_state = os.path.join(bundle_path, ".sync_state.json")
+    if os.path.exists(sync_state):
+        lines.append("  [OK] Sync state exists (.sync_state.json)")
+    else:
+        lines.append("  [INFO] Sync state not initialized (will be created on first sync)")
+    return lines
+
+
 def check_status(quiet=False):
     """Check current setup status and guide the user."""
     cli = LarkCLI()
@@ -81,6 +145,22 @@ def check_status(quiet=False):
                 print("✅ lark-cli: 已认证")
         except Exception as e:
             print(f"⚠️  lark-cli: 检查失败 ({e})")
+
+        # Check 5: Wiki config (Task 15)
+        for line in _check_wiki_config(config):
+            print(line)
+
+        # Check 6: FTS5 availability (Task 15)
+        for line in _check_fts5():
+            print(line)
+
+        # Check 7: Search index (Task 15)
+        for line in _check_search_index(bundle_path):
+            print(line)
+
+        # Check 8: Sync state (Task 15)
+        for line in _check_sync_state(bundle_path):
+            print(line)
 
         print()
         print("📌 **使用方式:**")
