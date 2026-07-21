@@ -403,3 +403,118 @@ def test_incremental_index_update(tmp_path):
     result_meeting = engine.search("微服务")
     assert result_meeting.total_found == 2, \
         f"meeting + design should still be findable, got {result_meeting.total_found}"
+
+
+def test_cjk_title_search(tmp_path):
+    """CJK keyword search matches title field (not just body_text).
+
+    This is a regression test for the bug where CJK spacing was only
+    applied to body_text, not to title/description/tags/people. The fix
+    applies CJK spacing to all FTS-indexed fields while keeping original
+    text in the documents table for display.
+    """
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "projects").mkdir()
+
+    # Doc with Chinese keyword in title but NOT in body
+    doc = bundle / "projects" / "title_test.md"
+    doc.write_text(
+        '---\n'
+        'type: Reference\n'
+        'title: "支付网关技术规范"\n'
+        'description: API技术文档\n'
+        'timestamp: 2026-07-20T10:00:00+08:00\n'
+        'project: payment\n'
+        'tags: [API, 文档]\n'
+        'people: []\n'
+        '---\n\n'
+        '# Summary\n\n'
+        'This document covers the gateway specification.\n'
+        '\n'
+        '# Key Points\n\n'
+        '- Gateway API endpoints\n',
+        encoding='utf-8',
+    )
+
+    from query_engine import QueryEngine
+    engine = QueryEngine(str(bundle))
+    count = engine.rebuild_index()
+    assert count == 1
+
+    # Search for "支付" which appears ONLY in the title, not in body
+    result = engine.search("支付")
+    assert result.total_found >= 1,         "CJK keyword '支付' from title should be found"
+
+    # Verify the returned title is ORIGINAL (not CJK-spaced)
+    match = result.matches[0]
+    assert match.title == "支付网关技术规范",         f"Title should be original (unspaced), got: {match.title!r}"
+
+
+def test_cjk_description_search(tmp_path):
+    """CJK keyword search matches description field."""
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "projects").mkdir()
+
+    # Doc with Chinese keyword in description but NOT in title or body
+    doc = bundle / "projects" / "desc_test.md"
+    doc.write_text(
+        '---\n'
+        'type: Reference\n'
+        'title: "Tech Spec"\n'
+        'description: "优惠券系统设计文档"\n'
+        'timestamp: 2026-07-20T10:00:00+08:00\n'
+        'project: marketing\n'
+        'tags: [spec]\n'
+        'people: []\n'
+        '---\n\n'
+        '# Summary\n\n'
+        'The system uses REST API.\n',
+        encoding='utf-8',
+    )
+
+    from query_engine import QueryEngine
+    engine = QueryEngine(str(bundle))
+    engine.rebuild_index()
+
+    # Search for "优惠券" which appears ONLY in description
+    result = engine.search("优惠券")
+    assert result.total_found >= 1,         "CJK keyword '优惠券' from description should be found"
+
+    # Verify description is not spaced in results (title check is enough
+    # since title/description use the same mechanism)
+    match = result.matches[0]
+    assert match.title == "Tech Spec",         f"Title should be original, got: {match.title!r}"
+
+
+def test_cjk_tags_filter(tmp_path):
+    """Tag filtering works with CJK tags (original, not spaced)."""
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "projects").mkdir()
+
+    doc = bundle / "projects" / "tag_test.md"
+    doc.write_text(
+        '---\n'
+        'type: Reference\n'
+        'title: "Test Doc"\n'
+        'description: "Test description"\n'
+        'timestamp: 2026-07-20T10:00:00+08:00\n'
+        'project: test\n'
+        'tags: [架构, 微服务]\n'
+        'people: []\n'
+        '---\n\n'
+        '# Summary\n\n'
+        'Some content here.\n',
+        encoding='utf-8',
+    )
+
+    from query_engine import QueryEngine, SearchFilters
+    engine = QueryEngine(str(bundle))
+    engine.rebuild_index()
+
+    # Filter by CJK tag — should match because tags in documents table
+    # are original (not CJK-spaced)
+    result = engine.search("content", filters=SearchFilters(tags=["架构"]))
+    assert result.total_found >= 1,         "Tag filter with CJK tag '架构' should match"

@@ -138,7 +138,11 @@ def test_ensure_index_creates_dir_and_db(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_ensure_index_creates_fts5_table(tmp_path):
-    """ensure_index() creates documents table, documents_fts virtual table, and 3 triggers."""
+    """ensure_index() creates documents table and documents_fts virtual table.
+
+    The FTS5 table is standalone (no external content, no triggers). FTS
+    entries are managed manually by update_index / remove_from_index.
+    """
     engine = QueryEngine(str(tmp_path))
     engine.ensure_index()
 
@@ -147,8 +151,7 @@ def test_ensure_index_creates_fts5_table(tmp_path):
         # Gather all schema objects of interest.
         rows = conn.execute(
             "SELECT type, name FROM sqlite_master "
-            "WHERE name IN ('documents', 'documents_fts', "
-            "'documents_ai', 'documents_ad', 'documents_au')"
+            "WHERE name IN ('documents', 'documents_fts')"
         ).fetchall()
     finally:
         conn.close()
@@ -161,13 +164,6 @@ def test_ensure_index_creates_fts5_table(tmp_path):
     # documents_fts virtual table.
     assert names_by_type.get("documents_fts") == "table", \
         "documents_fts virtual table must exist"
-    # Three sync triggers.
-    assert names_by_type.get("documents_ai") == "trigger", \
-        "documents_ai trigger must exist"
-    assert names_by_type.get("documents_ad") == "trigger", \
-        "documents_ad trigger must exist"
-    assert names_by_type.get("documents_au") == "trigger", \
-        "documents_au trigger must exist"
 
 
 # ---------------------------------------------------------------------------
@@ -198,11 +194,11 @@ def test_fts5_tokenizer_is_unicode61(tmp_path):
        VIRTUAL TABLE SQL (pulled from ``sqlite_master``). This directly
        asserts the configured tokenizer.
 
-    2. A functional round-trip proves the FTS5 index + sync triggers work
-       end-to-end: insert documents into ``documents`` (the AFTER INSERT
-       trigger syncs ``documents_fts``) and issue ``MATCH`` queries that
-       return matches. Both an English keyword and a full Chinese phrase
-       are exercised.
+    2. A functional round-trip proves the FTS5 index works end-to-end:
+       insert documents into ``documents`` and manually sync
+       ``documents_fts`` (standalone table, no triggers), then issue
+       ``MATCH`` queries that return matches. Both an English keyword and
+       a full Chinese phrase are exercised.
 
     Note: unicode61 tokenizes unbroken runs of CJK characters as a single
     token, so single-character Chinese MATCH queries do not hit -- the
@@ -226,18 +222,38 @@ def test_fts5_tokenizer_is_unicode61(tmp_path):
             f"documents_fts should use unicode61, got: {sql_row[0]!r}"
 
         # 2) Functional check: insert docs and search them via FTS5 MATCH.
-        #    The AFTER INSERT trigger syncs documents_fts automatically.
+        #    FTS entries are managed manually (standalone table, no triggers).
         conn.execute(
             "INSERT INTO documents (local_path, title, body_text) "
             "VALUES (?, ?, ?)",
             ("/bundle/en.md", "Meeting Notes",
              "Project alpha testing for the search engine"),
         )
+        en_rowid = conn.execute(
+            "SELECT rowid FROM documents WHERE local_path = ?",
+            ("/bundle/en.md",),
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO documents_fts (rowid, title, description, body_text, tags, people) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (en_rowid, "Meeting Notes", "",
+             "Project alpha testing for the search engine", "", ""),
+        )
         conn.execute(
             "INSERT INTO documents (local_path, title, body_text) "
             "VALUES (?, ?, ?)",
             ("/bundle/cn.md", "测试文档标题",
              "这是一段中文正文内容用于验证分词"),
+        )
+        cn_rowid = conn.execute(
+            "SELECT rowid FROM documents WHERE local_path = ?",
+            ("/bundle/cn.md",),
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO documents_fts (rowid, title, description, body_text, tags, people) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (cn_rowid, "测试文档标题", "",
+             "这是一段中文正文内容用于验证分词", "", ""),
         )
         conn.commit()
 

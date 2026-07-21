@@ -101,8 +101,12 @@ class QueryEngine:
                 )
             """)
 
-            # FTS5 virtual table (contentless external content approach)
-            # Using content='documents' to link FTS index to documents table
+            # FTS5 virtual table (standalone, not external-content).
+            # We use a standalone FTS5 table (no content= option) so that
+            # the FTS index can store CJK-spaced text for matching while
+            # the documents table stores original text for display and
+            # structured filtering. FTS entries are managed manually in
+            # update_index / remove_from_index / rebuild_index.
             conn.execute("""
                 CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
                     title,
@@ -110,38 +114,19 @@ class QueryEngine:
                     body_text,
                     tags,
                     people,
-                    content='documents',
-                    content_rowid='rowid',
                     tokenize='unicode61'
                 )
             """)
 
-            # Sync triggers: keep FTS table in sync with documents table
-            # AFTER INSERT
-            conn.execute("""
-                CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents BEGIN
-                    INSERT INTO documents_fts(rowid, title, description, body_text, tags, people)
-                    VALUES (new.rowid, new.title, new.description, new.body_text, new.tags, new.people);
-                END
-            """)
-
-            # AFTER DELETE
-            conn.execute("""
-                CREATE TRIGGER IF NOT EXISTS documents_ad AFTER DELETE ON documents BEGIN
-                    INSERT INTO documents_fts(documents_fts, rowid, title, description, body_text, tags, people)
-                    VALUES ('delete', old.rowid, old.title, old.description, old.body_text, old.tags, old.people);
-                END
-            """)
-
-            # AFTER UPDATE
-            conn.execute("""
-                CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
-                    INSERT INTO documents_fts(documents_fts, rowid, title, description, body_text, tags, people)
-                    VALUES ('delete', old.rowid, old.title, old.description, old.body_text, old.tags, old.people);
-                    INSERT INTO documents_fts(rowid, title, description, body_text, tags, people)
-                    VALUES (new.rowid, new.title, new.description, new.body_text, new.tags, new.people);
-                END
-            """)
+            # Migration: drop legacy triggers from older schema versions
+            # that used content='documents' with sync triggers. These
+            # triggers are no longer needed (FTS is managed manually) and
+            # would cause errors if they fire on the standalone FTS table.
+            for trigger_name in ("documents_ai", "documents_ad",
+                                 "documents_au"):
+                conn.execute(
+                    f"DROP TRIGGER IF EXISTS {trigger_name}"
+                )
 
             conn.commit()
         finally:
@@ -217,19 +202,38 @@ class QueryEngine:
         text = re.sub(r'^\s*[-*+]\s+', '', text, flags=re.MULTILINE)
         text = re.sub(r'^\s*\d+\.\s+', '', text, flags=re.MULTILINE)
 
-        # 10. CJK character spacing: insert a space between two consecutive
-        #     CJK characters (lookahead so we don't trail a space after the
-        #     last CJK char before a non-CJK char / end of string).
-        text = re.sub(
-            r'([\u4e00-\u9fff\u3400-\u4dbf])(?=[\u4e00-\u9fff\u3400-\u4dbf])',
-            r'\1 ', text,
-        )
+        # 10. CJK character spacing: delegate to the shared helper so the
+        #     same tokenization is applied to body text, metadata fields,
+        #     and search queries.
+        text = self._apply_cjk_spacing(text)
 
         # 11. Collapse all whitespace runs to a single space.
         text = re.sub(r'\s+', ' ', text)
 
         # 12. Strip leading/trailing whitespace.
         return text.strip()
+
+    @staticmethod
+    def _apply_cjk_spacing(text: str) -> str:
+        """Insert a space between every pair of consecutive CJK characters.
+
+        FTS5's ``unicode61`` tokenizer treats an unbroken run of CJK
+        characters as a single token, so single-character or multi-character
+        CJK queries never match. Inserting a space between each pair makes
+        every CJK character its own token, enabling sub-string matching via
+        ``AND`` / phrase queries.
+
+        Used by :meth:`_extract_body_text` (body text), :meth:`update_index`
+        (title / description / tags / people), and :meth:`_preprocess_query`
+        (search queries) so that the same tokenization is applied to indexed
+        content and to user queries.
+        """
+        if not text:
+            return text
+        return re.sub(
+            r'([\u4e00-\u9fff\u3400-\u4dbf])(?=[\u4e00-\u9fff\u3400-\u4dbf])',
+            r'\1 ', text,
+        )
 
     @staticmethod
     def _list_to_str(value) -> str:
@@ -249,8 +253,8 @@ class QueryEngine:
 
         Reads the file, parses its frontmatter, computes a content hash, and
         skips the write when the hash is unchanged. Otherwise inserts (or
-        replaces) the document row; the ``documents_ai`` / ``documents_au``
-        triggers keep the FTS index in sync.
+        replaces) the document row and manually syncs the FTS index with
+        CJK-spaced text for all searchable fields.
 
         Args:
             okf_path: Full absolute path to the ``.md`` file.
@@ -280,8 +284,13 @@ class QueryEngine:
                     return
 
                 body_text = self._extract_body_text(body)
+
+                # Store ORIGINAL (unspaced) text in documents table for
+                # display and structured filtering (tags/people matching).
                 tags_str = self._list_to_str(fm.get("tags"))
                 people_str = self._list_to_str(fm.get("people"))
+                orig_title = fm.get("title", "") or ""
+                orig_desc = fm.get("description", "") or ""
 
                 conn.execute(
                     """
@@ -294,8 +303,8 @@ class QueryEngine:
                     (
                         rel_path,
                         fm.get("resource", "") or "",
-                        fm.get("title", "") or "",
-                        fm.get("description", "") or "",
+                        orig_title,
+                        orig_desc,
                         fm.get("type", "") or "",
                         fm.get("project", "") or "",
                         tags_str,
@@ -305,14 +314,47 @@ class QueryEngine:
                         new_hash,
                     ),
                 )
+
+                # Manually sync the FTS index with CJK-spaced text.
+                # The FTS table is standalone (no triggers), so we must
+                # delete the old entry and insert the new one explicitly.
+                # CJK spacing is applied to ALL text fields so that FTS5
+                # can match CJK keywords against title, description, tags,
+                # and people -- not just body_text.
+                rowid_row = conn.execute(
+                    "SELECT rowid FROM documents WHERE local_path = ?",
+                    (rel_path,),
+                ).fetchone()
+                if rowid_row is not None:
+                    fts_rowid = rowid_row[0]
+                    conn.execute(
+                        "DELETE FROM documents_fts WHERE rowid = ?",
+                        (fts_rowid,),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO documents_fts
+                            (rowid, title, description, body_text, tags, people)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            fts_rowid,
+                            self._apply_cjk_spacing(orig_title),
+                            self._apply_cjk_spacing(orig_desc),
+                            body_text,
+                            self._apply_cjk_spacing(tags_str),
+                            self._apply_cjk_spacing(people_str),
+                        ),
+                    )
         finally:
             conn.close()
 
     def remove_from_index(self, okf_path: str) -> None:
         """Remove a document from the index.
 
-        Deletes the row from ``documents``; the ``documents_ad`` trigger
-        removes the corresponding FTS entry.
+        Deletes the row from both ``documents`` and ``documents_fts``.
+        Since the FTS table is standalone (no triggers), both deletions
+        are explicit.
 
         Args:
             okf_path: Full absolute path to the ``.md`` file.
@@ -323,6 +365,16 @@ class QueryEngine:
         conn = sqlite3.connect(self.db_path)
         try:
             with conn:
+                # Get rowid before deleting from documents.
+                row = conn.execute(
+                    "SELECT rowid FROM documents WHERE local_path = ?",
+                    (rel_path,),
+                ).fetchone()
+                if row is not None:
+                    conn.execute(
+                        "DELETE FROM documents_fts WHERE rowid = ?",
+                        (row[0],),
+                    )
                 conn.execute(
                     "DELETE FROM documents WHERE local_path = ?",
                     (rel_path,),
@@ -344,10 +396,12 @@ class QueryEngine:
         self.ensure_index()
 
         # Clear existing index to drop stale entries (deleted files).
+        # Both tables must be cleared since FTS is managed manually.
         conn = sqlite3.connect(self.db_path)
         try:
             with conn:
                 conn.execute("DELETE FROM documents")
+                conn.execute("DELETE FROM documents_fts")
         finally:
             conn.close()
 
@@ -378,15 +432,13 @@ class QueryEngine:
     def _preprocess_query(self, query: str) -> str:
         """Apply CJK character spacing to a search query.
 
-        Mirrors the CJK-spacing step in :meth:`_extract_body_text` so that
-        a query like ``"重构"`` becomes ``"重 构"`` and matches the spaced
-        tokens in the FTS ``body_text`` column. Without this preprocessing
-        ``MATCH '重构'`` would never hit the indexed ``'重 构'`` tokens.
+        Delegates to :meth:`_apply_cjk_spacing` so that a query like
+        ``"重构"`` becomes ``"重 构"`` and matches the spaced tokens in all
+        FTS columns (body_text, title, description, tags, people). Without
+        this preprocessing ``MATCH '重构'`` would never hit the indexed
+        ``'重 构'`` tokens.
         """
-        return re.sub(
-            r'([\u4e00-\u9fff\u3400-\u4dbf])(?=[\u4e00-\u9fff\u3400-\u4dbf])',
-            r'\1 ', query,
-        )
+        return self._apply_cjk_spacing(query)
 
     def _calculate_score(self, fts_rank: float, doc_type: str,
                          modified_time: str) -> float:
