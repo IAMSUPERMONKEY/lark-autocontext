@@ -29,17 +29,23 @@ Task 9 (index build & update):
 All tests use the ``tmp_path`` pytest fixture and exercise real SQLite
 operations -- nothing is mocked.
 """
+import io
 import os
 import sys
+import json
 import sqlite3
 from dataclasses import fields as dc_fields
+from unittest.mock import patch
+from contextlib import redirect_stdout
 
 import pytest
 
 # Make scripts/ importable when running from the repo root.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'scripts'))
 
-from query_engine import QueryEngine, SearchFilters, DocMatch, SearchResult  # noqa: E402
+from query_engine import (  # noqa: E402
+    QueryEngine, SearchFilters, DocMatch, SearchResult, main,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -896,3 +902,159 @@ def test_deep_read_related_docs(tmp_path):
         "context should mention related docs"
     assert "Alice" in result.context, \
         "context should contain the related doc content"
+
+
+# ===========================================================================
+# Task 11: CLI interface (main function)
+# ===========================================================================
+#
+# Tests exercise ``main()`` directly by mocking ``sys.argv`` and capturing
+# stdout via ``contextlib.redirect_stdout``. Real OKF files are written
+# into ``tmp_path`` (the bundle) before each call so the engine has
+# something to index/search. The ``--bundle`` flag overrides the config
+# lookup so tests never touch the real ``config.json``.
+
+
+def test_cli_search_basic(tmp_path):
+    """CLI ``search`` subcommand prints JSON with matches and total_found.
+
+    Indexes a single OKF doc containing ``重构``, then invokes the CLI
+    ``search`` subcommand with ``--bundle`` pointing at the temp bundle.
+    The parsed JSON output must have ``total_found > 0``, a non-empty
+    ``matches`` list, and the echoed ``query`` field.
+    """
+    engine = QueryEngine(str(tmp_path))
+    _index_okf(engine, tmp_path, "doc.md", _make_okf(
+        "重构讨论", "Meeting Minutes", "demo",
+        "# Summary\n\n本次会议讨论了重构方向，确定采用Pipeline架构。\n",
+        tags=["重构"], people=["张三"]))
+
+    argv = ["query_engine.py", "search", "重构",
+            "--bundle", str(tmp_path)]
+    buf = io.StringIO()
+    with patch("sys.argv", argv), redirect_stdout(buf):
+        main()
+
+    data = json.loads(buf.getvalue())
+    assert data["query"] == "重构"
+    assert data["total_found"] > 0, f"expected matches, got {data['total_found']}"
+    assert isinstance(data["matches"], list)
+    assert len(data["matches"]) > 0, "matches array should be non-empty"
+    m = data["matches"][0]
+    assert m["title"] == "重构讨论"
+    assert "score" in m
+    assert "snippet" in m
+    assert "full_content" in m
+    assert "related_docs" in m
+
+
+def test_cli_search_with_filter(tmp_path):
+    """CLI ``search --project`` keeps only docs in the named project.
+
+    Two docs share the keyword ``architecture`` but live in different
+    projects. Filtering by ``--project demo`` must leave exactly the demo
+    doc in the results.
+    """
+    engine = QueryEngine(str(tmp_path))
+    _index_okf(engine, tmp_path, "a.md", _make_okf(
+        "Report A", "Meeting Minutes", "demo",
+        "# Summary\n\narchitecture report.\n"))
+    _index_okf(engine, tmp_path, "b.md", _make_okf(
+        "Report B", "Meeting Minutes", "other",
+        "# Summary\n\narchitecture report.\n"))
+
+    argv = ["query_engine.py", "search", "architecture",
+            "--project", "demo", "--bundle", str(tmp_path)]
+    buf = io.StringIO()
+    with patch("sys.argv", argv), redirect_stdout(buf):
+        main()
+
+    data = json.loads(buf.getvalue())
+    assert data["total_found"] == 1, \
+        f"project filter should leave 1 doc, got {data['total_found']}"
+    assert data["matches"][0]["local_path"] == "a.md", \
+        "only the demo-project doc should match"
+
+
+def test_cli_search_no_deep_read(tmp_path):
+    """CLI ``search --no-deep-read`` skips deep read (context is empty).
+
+    Without ``--no-deep-read`` the context field carries the assembled
+    full content; with it, ``context`` must be the empty string and
+    ``full_content`` on each match must be null.
+    """
+    engine = QueryEngine(str(tmp_path))
+    _index_okf(engine, tmp_path, "doc.md", _make_okf(
+        "重构讨论", "Meeting Minutes", "demo",
+        "# Summary\n\n本次会议讨论了重构方向。\n",
+        tags=["重构"], people=["张三"]))
+
+    argv = ["query_engine.py", "search", "重构", "--no-deep-read",
+            "--bundle", str(tmp_path)]
+    buf = io.StringIO()
+    with patch("sys.argv", argv), redirect_stdout(buf):
+        main()
+
+    data = json.loads(buf.getvalue())
+    assert data["total_found"] > 0, "should still recall the doc"
+    assert data["context"] == "", \
+        "context must be empty in browse (no-deep-read) mode"
+    assert data["matches"][0]["full_content"] is None, \
+        "full_content must be null when deep read is skipped"
+
+
+def test_cli_rebuild(tmp_path):
+    """CLI ``rebuild`` subcommand rebuilds the index and reports the count.
+
+    Two OKF files are written to the bundle without prior indexing; the
+    ``rebuild`` command must scan them, build the index, and print JSON
+    with ``status: "success"`` and ``documents_indexed > 0``.
+    """
+    (tmp_path / "doc1.md").write_text(_make_okf(
+        "Doc One", "Meeting Minutes", "demo",
+        "# Summary\n\narchitecture design.\n"), encoding="utf-8")
+    (tmp_path / "doc2.md").write_text(_make_okf(
+        "Doc Two", "Requirement", "demo",
+        "# Summary\n\narchitecture review.\n"), encoding="utf-8")
+
+    argv = ["query_engine.py", "rebuild", "--bundle", str(tmp_path)]
+    buf = io.StringIO()
+    with patch("sys.argv", argv), redirect_stdout(buf):
+        main()
+
+    data = json.loads(buf.getvalue())
+    assert data["status"] == "success"
+    assert data["documents_indexed"] > 0, \
+        f"expected indexed docs, got {data['documents_indexed']}"
+    assert data["bundle_path"] == str(tmp_path)
+
+
+def test_cli_status(tmp_path):
+    """CLI ``status`` subcommand prints index statistics as JSON.
+
+    After indexing one Meeting Minutes doc in the demo project, the
+    ``status`` command must report ``document_count >= 1``, a non-zero
+    ``db_size_bytes``, and ``types`` / ``projects`` breakdown dicts that
+    contain the indexed doc's type and project.
+    """
+    engine = QueryEngine(str(tmp_path))
+    _index_okf(engine, tmp_path, "doc.md", _make_okf(
+        "Status Doc", "Meeting Minutes", "demo",
+        "# Summary\n\nstatus check.\n"))
+
+    argv = ["query_engine.py", "status", "--bundle", str(tmp_path)]
+    buf = io.StringIO()
+    with patch("sys.argv", argv), redirect_stdout(buf):
+        main()
+
+    data = json.loads(buf.getvalue())
+    assert data["status"] == "ready"
+    assert data["document_count"] >= 1, \
+        f"expected at least 1 doc, got {data['document_count']}"
+    assert data["db_size_bytes"] > 0, "db file should be non-empty"
+    assert isinstance(data["types"], dict)
+    assert isinstance(data["projects"], dict)
+    assert "Meeting Minutes" in data["types"], \
+        f"types should include 'Meeting Minutes', got {data['types']}"
+    assert "demo" in data["projects"], \
+        f"projects should include 'demo', got {data['projects']}"

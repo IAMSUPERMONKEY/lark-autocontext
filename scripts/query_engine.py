@@ -609,3 +609,157 @@ class QueryEngine:
                 included.add(mention)
 
         return context
+
+
+# ------------------------------------------------------------------
+# Task 11: CLI interface (argparse-based, JSON output for Agent)
+# ------------------------------------------------------------------
+
+import argparse
+import sys
+import json
+
+
+def _get_bundle_path():
+    """Resolve bundle path from config.json or default.
+
+    Reads ``scripts/config.json`` (if present) and returns its
+    ``bundle_path`` value; on any read/parse error, falls back to the
+    ``../bundle`` directory relative to this script.
+    """
+    config_path = os.path.join(os.path.dirname(__file__), "config.json")
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        return config.get("bundle_path", os.path.join(os.path.dirname(__file__), "..", "bundle"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return os.path.join(os.path.dirname(__file__), "..", "bundle")
+
+
+def main():
+    """CLI entry point for query_engine.
+
+    Commands:
+        search <query>  - Search the knowledge base
+        rebuild         - Rebuild the full index
+        status          - Show index statistics
+
+    All output is JSON for Agent consumption.
+    """
+    parser = argparse.ArgumentParser(
+        description="Progressive RAG query engine for lark-autocontext"
+    )
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # search subcommand
+    search_parser = subparsers.add_parser("search", help="Search the knowledge base")
+    search_parser.add_argument("query", type=str, help="Search query")
+    search_parser.add_argument("--project", type=str, default=None, help="Filter by project")
+    search_parser.add_argument("--type", type=str, default=None, dest="doc_type", help="Filter by document type")
+    search_parser.add_argument("--tags", type=str, default=None, help="Filter by tags (comma-separated)")
+    search_parser.add_argument("--people", type=str, default=None, help="Filter by people")
+    search_parser.add_argument("--no-deep-read", action="store_true", help="Skip deep read (browse mode)")
+    search_parser.add_argument("--top-n", type=int, default=10, help="Max results")
+    search_parser.add_argument("--bundle", type=str, default=None, help="Override bundle path")
+
+    # rebuild subcommand
+    rebuild_parser = subparsers.add_parser("rebuild", help="Rebuild the full index")
+    rebuild_parser.add_argument("--bundle", type=str, default=None, help="Override bundle path")
+
+    # status subcommand
+    status_parser = subparsers.add_parser("status", help="Show index statistics")
+    status_parser.add_argument("--bundle", type=str, default=None, help="Override bundle path")
+
+    args = parser.parse_args()
+
+    if args.command is None:
+        parser.print_help()
+        sys.exit(1)
+
+    # Resolve bundle path
+    bundle_path = args.bundle if hasattr(args, "bundle") and args.bundle else _get_bundle_path()
+    engine = QueryEngine(bundle_path)
+
+    if args.command == "search":
+        # Build filters
+        filters = None
+        if any([args.project, args.doc_type, args.tags, args.people]):
+            tags_list = args.tags.split(",") if args.tags else None
+            filters = SearchFilters(
+                project=args.project,
+                doc_type=args.doc_type,
+                tags=tags_list,
+                people=args.people,
+            )
+
+        result = engine.search(
+            query=args.query,
+            filters=filters,
+            top_n=args.top_n,
+            deep_read=not args.no_deep_read,
+        )
+
+        # Convert to JSON-serializable dict
+        output = {
+            "query": args.query,
+            "total_found": result.total_found,
+            "matches": [
+                {
+                    "local_path": m.local_path,
+                    "title": m.title,
+                    "doc_type": m.doc_type,
+                    "score": round(m.score, 4),
+                    "snippet": m.snippet,
+                    "full_content": m.full_content,
+                    "related_docs": m.related_docs,
+                }
+                for m in result.matches
+            ],
+            "context": result.context,
+        }
+        print(json.dumps(output, ensure_ascii=False, indent=2))
+
+    elif args.command == "rebuild":
+        engine.ensure_index()
+        count = engine.rebuild_index()
+        output = {
+            "status": "success",
+            "documents_indexed": count,
+            "bundle_path": bundle_path,
+        }
+        print(json.dumps(output, ensure_ascii=False, indent=2))
+
+    elif args.command == "status":
+        engine.ensure_index()
+        import sqlite3
+        conn = sqlite3.connect(engine.db_path)
+        try:
+            cursor = conn.execute("SELECT COUNT(*) FROM documents")
+            doc_count = cursor.fetchone()[0]
+
+            # Get DB file size
+            db_size = os.path.getsize(engine.db_path) if os.path.exists(engine.db_path) else 0
+
+            # Get types breakdown
+            cursor = conn.execute("SELECT doc_type, COUNT(*) FROM documents GROUP BY doc_type")
+            type_breakdown = {row[0]: row[1] for row in cursor.fetchall()}
+
+            # Get projects breakdown
+            cursor = conn.execute("SELECT project, COUNT(*) FROM documents GROUP BY project")
+            project_breakdown = {row[0]: row[1] for row in cursor.fetchall()}
+        finally:
+            conn.close()
+
+        output = {
+            "status": "ready",
+            "db_path": engine.db_path,
+            "document_count": doc_count,
+            "db_size_bytes": db_size,
+            "types": type_breakdown,
+            "projects": project_breakdown,
+        }
+        print(json.dumps(output, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()
