@@ -75,8 +75,8 @@ class QueryEngine:
         Creates:
         - .index/ directory
         - documents table (metadata + body_text)
-        - documents_fts virtual table (FTS5 with unicode61 tokenizer)
-        - Sync triggers (INSERT/UPDATE/DELETE on documents -> documents_fts)
+        - documents_fts virtual table (standalone FTS5 with unicode61)
+        - Legacy triggers and content='documents' schema are migrated away.
         """
         # Create directory
         index_dir = os.path.join(self.bundle_path, ".index")
@@ -107,6 +107,20 @@ class QueryEngine:
             # the documents table stores original text for display and
             # structured filtering. FTS entries are managed manually in
             # update_index / remove_from_index / rebuild_index.
+            #
+            # Migration: if the FTS table was created by an older version
+            # with content='documents' (external-content + triggers), drop
+            # and recreate it as a standalone table. The CREATE VIRTUAL
+            # TABLE IF NOT EXISTS below will not change an existing table's
+            # schema, so we must explicitly detect and drop the old one.
+            fts_sql_row = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' "
+                "AND name='documents_fts'"
+            ).fetchone()
+            if fts_sql_row is not None and "content=" in fts_sql_row[0].lower():
+                # Old external-content table detected -- drop and recreate.
+                conn.execute("DROP TABLE IF EXISTS documents_fts")
+
             conn.execute("""
                 CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
                     title,
