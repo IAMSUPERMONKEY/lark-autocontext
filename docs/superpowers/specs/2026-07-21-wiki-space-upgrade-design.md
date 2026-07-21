@@ -112,7 +112,7 @@ lark-autocontext 当前基于飞书文件夹（folder）获取文档，通过 la
 
 | 现有模块 | 变化 |
 |---------|------|
-| `cli.py` | 飞书读写逻辑迁移到 `wiki_connector.py`，`cli.py` 保留为薄封装或废弃 |
+| `cli.py` | 飞书读写逻辑迁移到 `wiki_connector.py`，`cli.py` 保留但标记 deprecated，飞书读写逻辑完全迁移到 `wiki_connector.py` |
 | `scanner.py` | 保留，数据源从 folder 改为 wiki（调用 `wiki_connector` 而非 `cli`） |
 | `okf_writer.py` | 保留不变，新增 `generate_index_pages()` |
 | `visualize.py` | 保留不变 |
