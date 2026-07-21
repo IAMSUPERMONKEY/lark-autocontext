@@ -16,7 +16,7 @@ from datetime import datetime
 
 # OKF <-> Feishu docx conversion helpers (Task 4). wiki_connector imports
 # scanner (stdlib-only cli); there is no circular import back to dual_storage.
-from wiki_connector import okf_to_feishu_content, _parse_frontmatter
+from wiki_connector import (okf_to_feishu_content, feishu_to_okf_body, _parse_frontmatter)
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +77,31 @@ class SyncResult:
     node_token: str = ""    # Feishu node token (if successful)
     feishu_url: str = ""
     error: str = ""         # error message if failed
+
+
+@dataclass
+class SyncItem:
+    """Represents a document that needs sync action.
+
+    Produced by :meth:`DualStorage.detect_feishu_edits` for each Agent-area
+    document whose Feishu ``modified_time`` is newer than the recorded
+    ``feishu_modified_time`` in sync_state, or for documents that exist on
+    Feishu but have no local mapping yet.
+
+    Attributes:
+        node_token: Feishu wiki node token.
+        local_path: relative path of the local OKF file (empty if no local
+            mapping exists yet -- the document is new on the Feishu side).
+        feishu_modified_time: the current ``modified_time`` reported by Feishu
+            (ISO 8601 or Unix timestamp string).
+        action_needed: ``"pull"`` when the document is known locally and
+            Feishu is newer; ``"unknown"`` when the document has no local
+            mapping yet (caller decides whether to create one).
+    """
+    node_token: str
+    local_path: str        # empty if no local mapping yet
+    feishu_modified_time: str
+    action_needed: str     # "pull" (feishu_newer) or "unknown" (new in feishu)
 
 
 class DualStorage:
@@ -254,3 +279,221 @@ class DualStorage:
             node_token=node_token,
             feishu_url=feishu_url,
         )
+
+    # ------------------------------------------------------------------
+    # Task 7: Feishu -> local pull flow
+    # ------------------------------------------------------------------
+
+    def detect_feishu_edits(self) -> list:
+        """Detect which Agent-area docs have been edited on Feishu side.
+
+        Flow:
+        1. ``wiki_connector.list_agent_docs()`` -> all Agent area docs
+           (``list[DocInfo]``).
+        2. For each DocInfo, check sync_state:
+           - If sync_state has this node_token AND recorded
+             ``feishu_modified_time`` < ``doc.modified_time`` -> feishu_newer
+             (``action_needed="pull"``).
+           - If sync_state doesn't have this node_token -> new doc in Feishu
+             (``action_needed="unknown"``).
+        3. Return a list of :class:`SyncItem` for docs needing pull.
+
+        Returns an empty list if ``wiki_connector`` is None (no Feishu I/O
+        possible). String comparison of same-format timestamps is used; both
+        sides are ISO 8601 or Unix timestamp strings of consistent length, so
+        lexicographic order matches chronological order.
+        """
+        if self.wiki_connector is None:
+            return []
+
+        docs = self.wiki_connector.list_agent_docs()
+        state = self.load_state()
+        state_docs = state.get("docs", {})
+
+        items: list = []
+        for doc in docs:
+            node_token = doc.node_token
+            if node_token in state_docs:
+                recorded_time = state_docs[node_token].get(
+                    "feishu_modified_time", ""
+                )
+                if doc.modified_time > recorded_time:
+                    items.append(SyncItem(
+                        node_token=node_token,
+                        local_path=state_docs[node_token].get(
+                            "local_path", ""
+                        ),
+                        feishu_modified_time=doc.modified_time,
+                        action_needed="pull",
+                    ))
+            else:
+                # New on the Feishu side -- no local mapping yet.
+                items.append(SyncItem(
+                    node_token=node_token,
+                    local_path="",
+                    feishu_modified_time=doc.modified_time,
+                    action_needed="unknown",
+                ))
+        return items
+
+    def pull_from_feishu(self, node_token: str) -> SyncResult:
+        """Pull Feishu edits back to local bundle.
+
+        Flow (spec section 3.2 "拉取流：飞书 → 本地"):
+        1. Get sync_state for this node_token.
+        2. ``wiki_connector.fetch_doc_content(node_token)`` -> Feishu content.
+        3. ``feishu_to_okf_body(content)`` -> cleaned OKF body (without
+           frontmatter; the emoji metadata header is stripped).
+        4. Read the existing local file (if it exists) and extract the raw
+           YAML frontmatter block so it can be re-attached to the new body
+           (human edits on Feishu never touch frontmatter).
+        5. Reconstruct OKF: existing frontmatter + new body.
+        6. Conflict detection: compare sync_state's ``local_content_hash``
+           with the actual file hash.
+           - Match -> safe overwrite (local unchanged since last sync).
+           - Mismatch -> conflict! Backup local, then overwrite (Feishu wins,
+             spec section 3.2 "冲突解决策略").
+        7. Write the OKF file to ``local_path``.
+        8. Update sync_state: new hash, ``feishu_modified_time``,
+           ``sync_direction=in_sync``.
+        9. Return :class:`SyncResult`.
+
+        Atomicity (spec section 3.2 "原子性保证"): the local file is
+        overwritten only after the Feishu fetch succeeds; sync_state is
+        updated only after the local write succeeds. On fetch failure,
+        sync_state is left untouched so the document stays
+        ``feishu_newer`` and is retried next time.
+
+        Args:
+            node_token: Feishu wiki node token to pull.
+
+        Returns:
+            A :class:`SyncResult`. ``success=False`` with ``error`` set when
+            there is no local mapping or the Feishu fetch fails.
+
+        Raises:
+            RuntimeError: if ``self.wiki_connector`` is None (misconfigured).
+        """
+        if self.wiki_connector is None:
+            raise RuntimeError("wiki_connector not configured")
+
+        existing = self.get_doc_state(node_token)
+        if existing is None or not existing.local_path:
+            return SyncResult(
+                success=False,
+                error=f"no local mapping for node_token {node_token!r}",
+            )
+
+        # 1. Fetch Feishu content.
+        try:
+            feishu_content = self.wiki_connector.fetch_doc_content(node_token)
+        except Exception as e:  # noqa: BLE001 - report any Feishu API failure
+            logger.error(
+                "pull_from_feishu: fetch failed for %s: %s", node_token, e
+            )
+            # Do NOT update sync_state -- stays feishu_newer for retry.
+            return SyncResult(
+                success=False, action="failed", error=str(e)
+            )
+
+        # 2. Convert Feishu content -> OKF body (header stripped, cleaned).
+        new_body = feishu_to_okf_body(feishu_content)
+
+        # 3. Read existing local file (if it exists) and extract the raw
+        #    frontmatter block so we can re-attach it to the new body.
+        local_file = os.path.join(self.bundle_path, existing.local_path)
+        old_content = ""
+        if os.path.exists(local_file):
+            with open(local_file, "r", encoding="utf-8") as f:
+                old_content = f.read()
+
+        frontmatter_block = ""
+        if old_content.startswith("---"):
+            lines = old_content.split("\n")
+            closing_idx = None
+            for i in range(1, len(lines)):
+                if lines[i].strip() == "---":
+                    closing_idx = i
+                    break
+            if closing_idx is not None:
+                frontmatter_block = "\n".join(lines[:closing_idx + 1])
+
+        # 4. Reconstruct OKF: frontmatter + new body.
+        if frontmatter_block:
+            new_okf = frontmatter_block + "\n\n" + new_body
+        else:
+            new_okf = new_body
+
+        # 5. Conflict detection: compare recorded hash with actual file hash.
+        actual_hash = self._compute_hash(old_content) if old_content else ""
+        recorded_hash = existing.local_content_hash
+        if old_content and actual_hash != recorded_hash:
+            # Conflict! Backup local before overwriting (Feishu wins).
+            self._backup_conflict(
+                node_token, existing.local_path, old_content
+            )
+
+        # 6. Write new OKF content to local file.
+        os.makedirs(os.path.dirname(local_file) or ".", exist_ok=True)
+        with open(local_file, "w", encoding="utf-8") as f:
+            f.write(new_okf)
+
+        # 7. Update sync_state with new hash and in_sync direction.
+        new_hash = self._compute_hash(new_okf)
+        now = datetime.now().isoformat()
+        updated_state = SyncState(
+            local_path=existing.local_path,
+            feishu_node_token=node_token,
+            feishu_url=existing.feishu_url,
+            local_content_hash=new_hash,
+            feishu_modified_time=now,
+            local_modified_time=now,
+            sync_direction=SyncDirection.IN_SYNC.value,
+            last_sync_at=now,
+        )
+        self.update_doc_state(node_token, updated_state)
+
+        # 8. Return success result.
+        return SyncResult(
+            success=True,
+            action="pulled",
+            node_token=node_token,
+            feishu_url=existing.feishu_url,
+        )
+
+    def _backup_conflict(self, node_token: str, local_path: str,
+                         old_content: str) -> str:
+        """Backup local content to ``.conflicts/`` directory on conflict.
+
+        Creates ``bundle/.conflicts/`` (if needed), writes a backup file named
+        ``{node_token}_{timestamp}.md`` containing ``old_content``, and
+        appends a structured entry to ``log.md`` in the same directory.
+
+        Args:
+            node_token: Feishu node token of the conflicting document.
+            local_path: relative local path of the document (for the log).
+            old_content: the local file content to back up.
+
+        Returns:
+            The absolute path of the backup file that was written.
+        """
+        conflicts_dir = os.path.join(self.bundle_path, ".conflicts")
+        os.makedirs(conflicts_dir, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_filename = f"{node_token}_{timestamp}.md"
+        backup_path = os.path.join(conflicts_dir, backup_filename)
+
+        with open(backup_path, "w", encoding="utf-8") as f:
+            f.write(old_content)
+
+        log_path = os.path.join(conflicts_dir, "log.md")
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(
+                f"\n## Conflict {timestamp}\n"
+                f"- node_token: {node_token}\n"
+                f"- local_path: {local_path}\n"
+                f"- backup: {backup_filename}\n"
+            )
+
+        return backup_path
