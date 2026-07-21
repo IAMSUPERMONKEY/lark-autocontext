@@ -546,3 +546,353 @@ def test_extract_body_text_strips_markdown(tmp_path):
     # CJK spacing applied.
     assert "重 构 讨 论" in result, \
         f"consecutive CJK chars should be space-separated, got: {result!r}"
+
+
+# ===========================================================================
+# Task 10: search with FTS5 recall and structured filtering
+# ===========================================================================
+
+
+def _make_okf(title, doc_type, project, body, tags=None, people=None,
+              mentions=None, timestamp="2026-07-01T10:00:00+08:00"):
+    """Build an OKF markdown string with YAML frontmatter for search tests."""
+    lines = ["---"]
+    lines.append(f"type: {doc_type}")
+    lines.append(f'title: "{title}"')
+    lines.append(f"description: {title}")
+    lines.append(f"tags: [{', '.join(tags or [])}]")
+    lines.append(f"timestamp: {timestamp}")
+    lines.append(f"project: {project}")
+    lines.append(f"people: [{', '.join(people or [])}]")
+    if mentions is not None:
+        lines.append(f"mentions: [{', '.join(mentions)}]")
+    lines.append("---")
+    lines.append("")
+    lines.append(body)
+    return "\n".join(lines)
+
+
+def _index_okf(engine, tmp_path, filename, okf_text):
+    """Write an OKF file under tmp_path and index it. Returns the file path."""
+    p = tmp_path / filename
+    p.write_text(okf_text, encoding="utf-8")
+    engine.update_index(str(p))
+    return p
+
+
+# ---------------------------------------------------------------------------
+# 1. test_search_basic_keyword
+# ---------------------------------------------------------------------------
+
+def test_search_basic_keyword(tmp_path):
+    """search() returns only docs matching the keyword, sorted by score desc.
+
+    Three docs are indexed; two contain the keyword "architecture". The
+    search must return exactly those two, ordered by descending score.
+    """
+    engine = QueryEngine(str(tmp_path))
+    _index_okf(engine, tmp_path, "doc_a.md", _make_okf(
+        "Architecture Design", "Meeting Minutes", "demo",
+        "# Summary\n\narchitecture design for the new system.\n",
+        tags=["arch"], people=["Alice"]))
+    _index_okf(engine, tmp_path, "doc_b.md", _make_okf(
+        "Architecture Review", "Review", "demo",
+        "# Summary\n\narchitecture review notes from last week.\n",
+        tags=["review"], people=["Bob"]))
+    _index_okf(engine, tmp_path, "doc_c.md", _make_okf(
+        "Marketing Plan", "Requirement", "marketing",
+        "# Summary\n\nmarketing plan for q3 release.\n",
+        tags=["mkt"], people=["Carol"]))
+
+    result = engine.search("architecture")
+
+    assert isinstance(result, SearchResult)
+    assert result.total_found == 2, \
+        f"expected 2 matches, got {result.total_found}"
+    titles = {m.title for m in result.matches}
+    assert titles == {"Architecture Design", "Architecture Review"}, \
+        f"unexpected match titles: {titles}"
+    # Sorted by score descending.
+    assert result.matches[0].score >= result.matches[1].score, \
+        "matches should be sorted by score descending"
+
+
+# ---------------------------------------------------------------------------
+# 2. test_search_chinese_keyword
+# ---------------------------------------------------------------------------
+
+def test_search_chinese_keyword(tmp_path):
+    """search() with a single Chinese character finds CJK-indexed docs.
+
+    This verifies _preprocess_query applies CJK spacing to the query so
+    that MATCH '重' hits the spaced body_text token '重'.
+    """
+    engine = QueryEngine(str(tmp_path))
+    _index_okf(engine, tmp_path, "cn.md", _make_okf(
+        "重构讨论", "Meeting Minutes", "demo",
+        "# Summary\n\n本次会议讨论了重构方向，确定采用Pipeline架构。\n",
+        tags=["重构"], people=["张三"]))
+
+    result = engine.search("重")
+
+    assert result.total_found == 1, \
+        f"single CJK char search should find 1 doc, got {result.total_found}"
+    assert result.matches[0].title == "重构讨论"
+
+
+# ---------------------------------------------------------------------------
+# 3. test_search_with_project_filter
+# ---------------------------------------------------------------------------
+
+def test_search_with_project_filter(tmp_path):
+    """search() with filters.project keeps only docs in that project."""
+    engine = QueryEngine(str(tmp_path))
+    _index_okf(engine, tmp_path, "a1.md", _make_okf(
+        "Report A1", "Meeting Minutes", "project_a",
+        "# Summary\n\nquarterly report for project a.\n"))
+    _index_okf(engine, tmp_path, "a2.md", _make_okf(
+        "Report A2", "Requirement", "project_a",
+        "# Summary\n\nannual report for project a.\n"))
+    _index_okf(engine, tmp_path, "b1.md", _make_okf(
+        "Report B1", "Meeting Minutes", "project_b",
+        "# Summary\n\nstatus report for project b.\n"))
+    _index_okf(engine, tmp_path, "b2.md", _make_okf(
+        "Report B2", "Requirement", "project_b",
+        "# Summary\n\nbudget report for project b.\n"))
+
+    result = engine.search("report", filters=SearchFilters(project="project_a"))
+
+    assert result.total_found == 2, \
+        f"project filter should leave 2 docs, got {result.total_found}"
+    for m in result.matches:
+        assert m.local_path in ("a1.md", "a2.md"), \
+            f"only project_a docs expected, got {m.local_path}"
+
+
+# ---------------------------------------------------------------------------
+# 4. test_search_with_type_filter
+# ---------------------------------------------------------------------------
+
+def test_search_with_type_filter(tmp_path):
+    """search() with filters.doc_type keeps only docs of that type."""
+    engine = QueryEngine(str(tmp_path))
+    _index_okf(engine, tmp_path, "mm.md", _make_okf(
+        "Meeting Report", "Meeting Minutes", "demo",
+        "# Summary\n\nreport from the meeting.\n"))
+    _index_okf(engine, tmp_path, "req.md", _make_okf(
+        "Requirement Report", "Requirement", "demo",
+        "# Summary\n\nreport for the requirement.\n"))
+    _index_okf(engine, tmp_path, "rev.md", _make_okf(
+        "Review Report", "Review", "demo",
+        "# Summary\n\nreport for the review.\n"))
+
+    result = engine.search("report", filters=SearchFilters(doc_type="Meeting Minutes"))
+
+    assert result.total_found == 1, \
+        f"type filter should leave 1 doc, got {result.total_found}"
+    assert result.matches[0].title == "Meeting Report"
+    assert result.matches[0].doc_type == "Meeting Minutes"
+
+
+# ---------------------------------------------------------------------------
+# 5. test_search_no_results
+# ---------------------------------------------------------------------------
+
+def test_search_no_results(tmp_path):
+    """search() for a non-existent keyword returns an empty SearchResult."""
+    engine = QueryEngine(str(tmp_path))
+    _index_okf(engine, tmp_path, "doc.md", _make_okf(
+        "Some Doc", "Meeting Minutes", "demo",
+        "# Summary\n\nthis document talks about pipelines.\n"))
+
+    result = engine.search("zzznonexistentkeyword")
+
+    assert result.total_found == 0
+    assert result.matches == []
+    assert result.context == ""
+
+
+# ---------------------------------------------------------------------------
+# 6. test_search_returns_snippet
+# ---------------------------------------------------------------------------
+
+def test_search_returns_snippet(tmp_path):
+    """search() populates DocMatch.snippet with the matched text excerpt."""
+    engine = QueryEngine(str(tmp_path))
+    _index_okf(engine, tmp_path, "doc.md", _make_okf(
+        "Snippet Doc", "Meeting Minutes", "demo",
+        "# Summary\n\narchitecture design for the new system.\n"))
+
+    result = engine.search("architecture")
+
+    assert result.total_found == 1
+    m = result.matches[0]
+    assert m.snippet, "snippet should be non-empty"
+    assert "architecture" in m.snippet.lower(), \
+        f"snippet should contain the keyword, got: {m.snippet!r}"
+
+
+# ---------------------------------------------------------------------------
+# 7. test_search_deep_read
+# ---------------------------------------------------------------------------
+
+def test_search_deep_read(tmp_path):
+    """search() with deep_read=True fills context and full_content."""
+    engine = QueryEngine(str(tmp_path))
+    _index_okf(engine, tmp_path, "doc.md", _make_okf(
+        "重构讨论", "Meeting Minutes", "demo",
+        "# Summary\n\n本次会议讨论了重构方向，确定采用Pipeline架构。\n",
+        tags=["重构"], people=["张三"]))
+
+    result = engine.search("重构", deep_read=True)
+
+    assert result.total_found == 1
+    m = result.matches[0]
+    assert m.full_content is not None, "full_content should be filled on deep read"
+    assert result.context, "context should be non-empty on deep read"
+    # Context contains the raw file content (title + body).
+    assert "重构讨论" in result.context, \
+        "context should contain the document title"
+    assert "Pipeline" in result.context, \
+        "context should contain body content"
+
+
+# ---------------------------------------------------------------------------
+# 8. test_search_no_deep_read
+# ---------------------------------------------------------------------------
+
+def test_search_no_deep_read(tmp_path):
+    """search() with deep_read=False leaves context empty and full_content None."""
+    engine = QueryEngine(str(tmp_path))
+    _index_okf(engine, tmp_path, "doc.md", _make_okf(
+        "重构讨论", "Meeting Minutes", "demo",
+        "# Summary\n\n本次会议讨论了重构方向，确定采用Pipeline架构。\n",
+        tags=["重构"], people=["张三"]))
+
+    result = engine.search("重构", deep_read=False)
+
+    assert result.total_found == 1
+    assert result.context == "", "context should be empty when deep_read=False"
+    assert result.matches[0].full_content is None, \
+        "full_content should be None when deep_read=False"
+    assert result.matches[0].related_docs is None, \
+        "related_docs should be None when deep_read=False"
+
+
+# ---------------------------------------------------------------------------
+# 9. test_calculate_score_time_decay
+# ---------------------------------------------------------------------------
+
+def test_calculate_score_time_decay(tmp_path):
+    """_calculate_score() gives recent docs a higher score than old docs."""
+    engine = QueryEngine(str(tmp_path))
+    fts_rank = -1.0
+    doc_type = "Meeting Minutes"
+    recent = engine._calculate_score(fts_rank, doc_type, "2026-07-21T00:00:00+08:00")
+    old = engine._calculate_score(fts_rank, doc_type, "2025-07-21T00:00:00+08:00")
+
+    assert recent > old, \
+        f"recent doc ({recent}) should score higher than old doc ({old})"
+    # Sanity-check the time-decay band contributions.
+    # fts_score = 1/(1+1) = 0.5; type_weight = 1.0.
+    # recent: 0.5*0.6 + 1.0*0.2 + 1.0*0.2 = 0.7
+    # old:     0.5*0.6 + 0.3*0.2 + 1.0*0.2 = 0.56
+    assert abs(recent - 0.7) < 1e-9, f"recent score expected ~0.7, got {recent}"
+    assert abs(old - 0.56) < 1e-9, f"old score expected ~0.56, got {old}"
+
+
+# ---------------------------------------------------------------------------
+# 10. test_calculate_score_type_weight
+# ---------------------------------------------------------------------------
+
+def test_calculate_score_type_weight(tmp_path):
+    """_calculate_score() weights Meeting Minutes above generic types."""
+    engine = QueryEngine(str(tmp_path))
+    fts_rank = -1.0
+    modified_time = "2026-07-21T00:00:00+08:00"
+    mm = engine._calculate_score(fts_rank, "Meeting Minutes", modified_time)
+    other = engine._calculate_score(fts_rank, "Other", modified_time)
+
+    assert mm > other, \
+        f"Meeting Minutes ({mm}) should score higher than Other ({other})"
+    # type_weight: MM=1.0, Other=0.6; fts=0.5; time=1.0.
+    # mm:    0.5*0.6 + 1.0*0.2 + 1.0*0.2 = 0.7
+    # other: 0.5*0.6 + 1.0*0.2 + 0.6*0.2 = 0.62
+    assert abs(mm - 0.7) < 1e-9, f"MM score expected ~0.7, got {mm}"
+    assert abs(other - 0.62) < 1e-9, f"Other score expected ~0.62, got {other}"
+
+
+# ---------------------------------------------------------------------------
+# 11. test_preprocess_query_cjk
+# ---------------------------------------------------------------------------
+
+def test_preprocess_query_cjk(tmp_path):
+    """_preprocess_query() inserts spaces between consecutive CJK chars."""
+    engine = QueryEngine(str(tmp_path))
+    assert engine._preprocess_query("重构讨论") == "重 构 讨 论"
+    # ASCII queries are left untouched.
+    assert engine._preprocess_query("architecture") == "architecture"
+    # Mixed CJK + ASCII keeps CJK spacing without trailing spaces.
+    assert engine._preprocess_query("重构Pipeline") == "重 构Pipeline"
+
+
+# ---------------------------------------------------------------------------
+# 12. test_deep_read_context_limit
+# ---------------------------------------------------------------------------
+
+def test_deep_read_context_limit(tmp_path):
+    """_deep_read() never produces a context longer than max_context_chars."""
+    engine = QueryEngine(str(tmp_path))
+    large_body = "# Summary\n\n" + ("alpha content " * 80)
+    for name in ("big1.md", "big2.md", "big3.md"):
+        _index_okf(engine, tmp_path, name, _make_okf(
+            name, "Meeting Minutes", "demo", large_body,
+            tags=["big"], people=["Alice"]))
+
+    # Recall matches without deep reading first.
+    result = engine.search("alpha", deep_read=False)
+    assert len(result.matches) == 3
+
+    context = engine._deep_read(result.matches, max_context_chars=200)
+    assert len(context) <= 200, \
+        f"context must not exceed limit, got {len(context)} chars"
+    assert len(context) > 0, "context should contain at least one entry"
+
+
+# ---------------------------------------------------------------------------
+# 13. test_deep_read_related_docs
+# ---------------------------------------------------------------------------
+
+def test_deep_read_related_docs(tmp_path):
+    """_deep_read() follows frontmatter mentions and lists related docs."""
+    engine = QueryEngine(str(tmp_path))
+    _index_okf(engine, tmp_path, "main.md", _make_okf(
+        "带关联的文档", "Meeting Minutes", "demo",
+        "# Summary\n\n这是一篇带有关联文档的笔记。\n",
+        tags=["test"], people=["张三"],
+        mentions=["/people/Alice.md", "/concepts/OKF.md"]))
+
+    # Create the related doc files inside the bundle.
+    people_dir = tmp_path / "people"
+    people_dir.mkdir()
+    (people_dir / "Alice.md").write_text(
+        "---\ntype: Reference\ntitle: \"Alice的资料\"\n---\n\nAlice是一位工程师。\n",
+        encoding="utf-8")
+    concepts_dir = tmp_path / "concepts"
+    concepts_dir.mkdir()
+    (concepts_dir / "OKF.md").write_text(
+        "---\ntype: Reference\ntitle: \"OKF概念\"\n---\n\nOKF是目标关键结果框架。\n",
+        encoding="utf-8")
+
+    result = engine.search("关联", deep_read=True)
+
+    assert result.total_found == 1, \
+        f"expected 1 match, got {result.total_found}"
+    m = result.matches[0]
+    assert m.related_docs is not None, "related_docs should be populated"
+    assert "/people/Alice.md" in m.related_docs
+    assert "/concepts/OKF.md" in m.related_docs
+    assert "Related:" in result.context, \
+        "context should mention related docs"
+    assert "Alice" in result.context, \
+        "context should contain the related doc content"

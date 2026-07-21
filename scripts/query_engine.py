@@ -10,6 +10,7 @@ import os
 import re
 import hashlib
 import logging
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -369,3 +370,242 @@ class QueryEngine:
         logger.info("rebuild_index: indexed %d documents under %s",
                     count, self.bundle_path)
         return count
+
+    # ------------------------------------------------------------------
+    # Task 10: search with FTS5 recall and structured filtering
+    # ------------------------------------------------------------------
+
+    def _preprocess_query(self, query: str) -> str:
+        """Apply CJK character spacing to a search query.
+
+        Mirrors the CJK-spacing step in :meth:`_extract_body_text` so that
+        a query like ``"重构"`` becomes ``"重 构"`` and matches the spaced
+        tokens in the FTS ``body_text`` column. Without this preprocessing
+        ``MATCH '重构'`` would never hit the indexed ``'重 构'`` tokens.
+        """
+        return re.sub(
+            r'([\u4e00-\u9fff\u3400-\u4dbf])(?=[\u4e00-\u9fff\u3400-\u4dbf])',
+            r'\1 ', query,
+        )
+
+    def _calculate_score(self, fts_rank: float, doc_type: str,
+                         modified_time: str) -> float:
+        """Composite score: FTS relevance * 0.6 + time decay * 0.2 + type weight * 0.2.
+
+        - FTS relevance: ``bm25()`` returns negative values (lower = more
+          relevant); normalize via ``1.0 / (1.0 + abs(fts_rank))`` to map
+          any bm25 value into ``(0, 1]`` (closer to 1 = more relevant).
+        - Time decay: <=30d = 1.0, <=90d = 0.8, <=180d = 0.5, else 0.3.
+          Empty/unparseable ``modified_time`` -> 0.3.
+        - Type weight: Meeting Minutes/Decision = 1.0, Requirement = 0.9,
+          Review/Review Report = 0.8, Reference = 0.7, else 0.6.
+        """
+        fts_score = 1.0 / (1.0 + abs(fts_rank))
+
+        # Time decay.
+        time_decay = 0.3
+        if modified_time:
+            try:
+                dt = datetime.fromisoformat(modified_time)
+                now = datetime.now(timezone.utc)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                days = (now - dt).days
+                if days <= 30:
+                    time_decay = 1.0
+                elif days <= 90:
+                    time_decay = 0.8
+                elif days <= 180:
+                    time_decay = 0.5
+                else:
+                    time_decay = 0.3
+            except (ValueError, TypeError):
+                time_decay = 0.3
+
+        # Type weight.
+        if doc_type in ("Meeting Minutes", "Decision"):
+            type_weight = 1.0
+        elif doc_type == "Requirement":
+            type_weight = 0.9
+        elif doc_type in ("Review", "Review Report"):
+            type_weight = 0.8
+        elif doc_type == "Reference":
+            type_weight = 0.7
+        else:
+            type_weight = 0.6
+
+        return fts_score * 0.6 + time_decay * 0.2 + type_weight * 0.2
+
+    def search(self, query: str, filters: SearchFilters = None,
+               top_n: int = 10, deep_read: bool = True) -> SearchResult:
+        """Three-stage progressive RAG search.
+
+        Stage 1 -- FTS5 recall: full-text match on the preprocessed query.
+        Stage 2 -- structured filtering (project / doc_type / tags / people
+        / date range) applied in Python.
+        Stage 2b -- composite scoring + descending sort, capped at ``top_n``.
+        Stage 3 -- deep read: assemble matched full content (plus mentions)
+        as Agent context when ``deep_read=True``.
+
+        Args:
+            query: Natural-language or keyword query.
+            filters: Optional :class:`SearchFilters` for structured filtering.
+            top_n: Maximum number of matches to return.
+            deep_read: When True, read full content of matches and build a
+                context string.
+
+        Returns:
+            A :class:`SearchResult`. If the FTS5 query fails (syntax error),
+            an empty ``SearchResult`` is returned.
+        """
+        self.ensure_index()
+        processed_query = self._preprocess_query(query)
+
+        # ---- Stage 1: FTS5 recall ----
+        conn = sqlite3.connect(self.db_path)
+        try:
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT d.local_path, d.title, d.doc_type, d.project,
+                           d.tags, d.people, d.modified_time, d.body_text,
+                           bm25(documents_fts) AS rank,
+                           snippet(documents_fts, 2, '<mark>', '</mark>',
+                                   '...', 20) AS snippet
+                    FROM documents_fts
+                    JOIN documents d ON d.rowid = documents_fts.rowid
+                    WHERE documents_fts MATCH ?
+                    ORDER BY rank
+                    LIMIT ?
+                    """,
+                    (processed_query, top_n),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                # FTS5 query syntax error -> empty result.
+                return SearchResult(matches=[], context="", total_found=0)
+        finally:
+            conn.close()
+
+        # ---- Stage 2: structured filtering ----
+        filtered = []
+        for row in rows:
+            (local_path, title, doc_type, project, tags, people,
+             modified_time, body_text, rank, snippet_text) = row
+
+            if filters is not None:
+                if filters.project is not None and project != filters.project:
+                    continue
+                if filters.doc_type is not None and doc_type != filters.doc_type:
+                    continue
+                if filters.tags is not None:
+                    doc_tags = [t.strip() for t in (tags or "").split(",")
+                                if t.strip()]
+                    if not any(t in doc_tags for t in filters.tags):
+                        continue
+                if filters.people is not None:
+                    if filters.people not in (people or ""):
+                        continue
+                if filters.date_from is not None or filters.date_to is not None:
+                    mt = modified_time or ""
+                    if filters.date_from is not None and mt < filters.date_from:
+                        continue
+                    if filters.date_to is not None and mt > filters.date_to:
+                        continue
+
+            filtered.append(row)
+
+        # ---- Stage 2b: scoring and sorting ----
+        matches = []
+        for row in filtered:
+            (local_path, title, doc_type, project, tags, people,
+             modified_time, body_text, rank, snippet_text) = row
+            score = self._calculate_score(rank, doc_type, modified_time)
+            matches.append(DocMatch(
+                local_path=local_path,
+                title=title,
+                doc_type=doc_type,
+                score=score,
+                snippet=snippet_text or "",
+            ))
+
+        matches.sort(key=lambda m: m.score, reverse=True)
+        matches = matches[:top_n]
+
+        # ---- Stage 3: deep read ----
+        context = ""
+        if deep_read:
+            context = self._deep_read(matches, max_context_chars=8000)
+
+        return SearchResult(matches=matches, context=context,
+                            total_found=len(matches))
+
+    def _deep_read(self, matches: list, max_context_chars: int = 8000) -> str:
+        """Read full content of matched docs and assemble as Agent context.
+
+        For each match (already sorted by score desc):
+        - Read the OKF file from disk; store full content on the match.
+        - Parse frontmatter ``mentions`` and store on ``match.related_docs``.
+        - Append a structured entry ``=== title (type, score: X.XX) ===``.
+
+        For each mention (depth limit 1), if the referenced file exists and
+        has not already been included, append its first 500 chars as
+        ``Related: <title>``.
+
+        The assembled context never exceeds ``max_context_chars``: each
+        entry is truncated to fit the remaining budget.
+        """
+        context = ""
+        included = set()  # local paths / mention paths already added
+
+        for match in matches:
+            if len(context) >= max_context_chars:
+                break
+            file_path = os.path.join(self.bundle_path, match.local_path)
+            if not os.path.exists(file_path):
+                continue
+            with open(file_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            match.full_content = content
+
+            fm, _ = self._parse_okf(content)
+            mentions = fm.get("mentions", [])
+            if mentions is None:
+                mentions = []
+            elif isinstance(mentions, str):
+                mentions = [mentions]
+            match.related_docs = list(mentions) if mentions else []
+
+            remaining = max_context_chars - len(context)
+            if remaining <= 0:
+                break
+            header = (f"=== {match.title} ({match.doc_type}, "
+                      f"score: {match.score:.2f}) ===\n")
+            entry = header + content + "\n\n"
+            if len(entry) > remaining:
+                entry = entry[:remaining]
+            context += entry
+            included.add(match.local_path)
+
+            # Related docs (depth limit 1).
+            for mention in match.related_docs:
+                if len(context) >= max_context_chars:
+                    break
+                rel_path = os.path.join(self.bundle_path, mention.lstrip("/"))
+                if not os.path.exists(rel_path):
+                    continue
+                if mention in included or rel_path in included:
+                    continue
+                with open(rel_path, "r", encoding="utf-8") as f:
+                    rel_content = f.read(500)
+                rel_fm, _ = self._parse_okf(rel_content)
+                rel_title = rel_fm.get("title", "") or mention
+                remaining = max_context_chars - len(context)
+                if remaining <= 0:
+                    break
+                rel_entry = f"Related: {rel_title}\n{rel_content}\n\n"
+                if len(rel_entry) > remaining:
+                    rel_entry = rel_entry[:remaining]
+                context += rel_entry
+                included.add(mention)
+
+        return context
