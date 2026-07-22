@@ -947,3 +947,27 @@ def test_expand_whiteboards_multiple():
     assert "Middle text" in result
     assert "Text after" in result
     assert mock_run.call_count == 2
+
+
+def test_fetch_doc_content_expands_whiteboards():
+    """fetch_doc_content calls _expand_whiteboards on the cleaned content."""
+    conn = WikiConnector("s", "r", "a")
+    with patch.object(conn, "_resolve_obj_token", return_value="obj-token-1"):
+        doc_response = json.dumps({
+            "data": {"document": {"content": '# Title\n<whiteboard token="wbX12345"></whiteboard>\nText'}}
+        })
+        wb_response = json.dumps({
+            "ok": True,
+            "data": {"nodes": [{"type": "text_shape", "text": {"text": "图表说明"}}]}
+        })
+        with patch("wiki_connector.subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout=doc_response, stderr=""),
+                MagicMock(returncode=0, stdout=wb_response, stderr=""),
+            ]
+            result = conn.fetch_doc_content("node-1")
+    assert "<whiteboard" not in result
+    assert "📊" in result
+    assert "图表说明" in result
+    assert "# Title" in result
+    assert "Text" in result

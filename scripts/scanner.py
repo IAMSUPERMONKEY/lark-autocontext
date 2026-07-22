@@ -110,7 +110,8 @@ def clean_feishu_content(raw: str) -> str:
     raw = re.sub(r'<details[^>]*>(.*?)</details>', r'\1', raw, flags=re.DOTALL)
 
     # Strip any remaining HTML tags we didn't handle above
-    raw = re.sub(r'<[^>]+>', '', raw)
+    # (preserve <whiteboard> tags for _expand_whiteboards to process)
+    raw = re.sub(r'<(?!/?whiteboard\b)[^>]+>', '', raw)
 
     # Normalize whitespace
     raw = re.sub(r'\n{3,}', '\n\n', raw)

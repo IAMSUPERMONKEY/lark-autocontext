@@ -354,13 +354,19 @@ class WikiConnector:
         )
         return ""
 
-    def fetch_doc_content(self, node_token: str) -> str:
+    def fetch_doc_content(self, node_token: str, bundle_dir: str = None) -> str:
         """Fetch a document's content as cleaned Markdown.
 
         Resolves ``node_token`` -> ``obj_token`` via the wiki node list, then
-        fetches the doc markdown through ``docs +fetch``, and finally runs it
-        through ``scanner.clean_feishu_content`` to strip residual Feishu
-        HTML/private tags.
+        fetches the doc markdown through ``docs +fetch``, cleans it via
+        ``scanner.clean_feishu_content``, and finally expands whiteboard
+        tags into structured summaries via ``_expand_whiteboards``.
+
+        Args:
+            node_token: Wiki node token of the document.
+            bundle_dir: Optional bundle directory for saving whiteboard
+                preview images. If ``None``, whiteboards are expanded
+                with text summaries only (no PNG download).
         """
         obj_token = self._resolve_obj_token(node_token)
         output = self._run_lark(
@@ -371,7 +377,9 @@ class WikiConnector:
         content = (
             data.get("data", {}).get("document", {}).get("content", "")
         )
-        return clean_feishu_content(content)
+        content = clean_feishu_content(content)
+        content = self._expand_whiteboards(content, bundle_dir=bundle_dir)
+        return content
 
     def fetch_doc_meta(self, node_token: str) -> DocMeta:
         """Fetch metadata (title, timestamps, creator, owner) for a document.
