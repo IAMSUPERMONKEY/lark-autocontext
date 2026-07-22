@@ -799,3 +799,151 @@ def test_okf_to_feishu_content_preserves_image_alt():
     result = okf_to_feishu_content(okf)
     assert "*📷 图片描述：A very long image description that should be preserved*" in result
     assert "![](https://example.com/img.png)" in result
+
+
+# ---------------------------------------------------------------------------
+# _expand_whiteboards
+# ---------------------------------------------------------------------------
+
+def test_expand_whiteboards_no_whiteboard():
+    """Content with no whiteboard tags is returned unchanged."""
+    conn = WikiConnector("s", "r", "a")
+    content = "# Title\n\nSome text without whiteboards."
+    result = conn._expand_whiteboards(content)
+    assert result == content
+
+
+def test_expand_whiteboards_text_only():
+    """Whiteboard with only text_shape nodes outputs text summary, no image download."""
+    conn = WikiConnector("s", "r", "a")
+    content = 'Before\n<whiteboard token="wb123"></whiteboard>\nAfter'
+    raw_response = json.dumps({
+        "ok": True,
+        "data": {
+            "nodes": [
+                {"type": "text_shape", "text": {"text": "需求评审"}},
+                {"type": "text_shape", "text": {"text": "开发"}},
+                {"type": "text_shape", "text": {"text": "测试"}},
+            ]
+        }
+    })
+    with patch("wiki_connector.subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout=raw_response, stderr=""
+        )
+        result = conn._expand_whiteboards(content)
+    assert "<whiteboard" not in result
+    assert "📊" in result
+    assert "需求评审" in result
+    assert "开发" in result
+    assert "测试" in result
+    assert "3个文字节点" in result
+    assert "0个图片节点" in result
+    assert ".assets/" not in result
+
+
+def test_expand_whiteboards_image_heavy():
+    """Whiteboard with >50% image nodes triggers PNG download when bundle_dir given."""
+    import tempfile
+    conn = WikiConnector("s", "r", "a")
+    content = '<whiteboard token="wbIMG001"></whiteboard>'
+    raw_response = json.dumps({
+        "ok": True,
+        "data": {
+            "nodes": [
+                {"type": "text_shape", "text": {"text": "APP用户规模"}},
+                {"type": "image", "image": {"token": "img1"}},
+                {"type": "image", "image": {"token": "img2"}},
+                {"type": "image", "image": {"token": "img3"}},
+            ]
+        }
+    })
+    img_response = json.dumps({
+        "ok": True,
+        "data": {"preview_image_path": "whiteboard_wbIMG001.png", "size_bytes": 470076}
+    })
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with patch("wiki_connector.subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout=raw_response, stderr=""),
+                MagicMock(returncode=0, stdout=img_response, stderr=""),
+            ]
+            result = conn._expand_whiteboards(content, bundle_dir=tmpdir)
+        assert "📊" in result
+        assert "APP用户规模" in result
+        assert "3个图片节点" in result
+        assert "已生成预览图" in result
+        assert ".assets/whiteboard_wbIMG001.png" in result
+
+
+def test_expand_whiteboards_no_bundle_dir():
+    """When bundle_dir=None, image-heavy board outputs text only, no download."""
+    conn = WikiConnector("s", "r", "a")
+    content = '<whiteboard token="wbIMG002"></whiteboard>'
+    raw_response = json.dumps({
+        "ok": True,
+        "data": {
+            "nodes": [
+                {"type": "image", "image": {"token": "img1"}},
+                {"type": "image", "image": {"token": "img2"}},
+                {"type": "image", "image": {"token": "img3"}},
+            ]
+        }
+    })
+    with patch("wiki_connector.subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout=raw_response, stderr=""
+        )
+        result = conn._expand_whiteboards(content, bundle_dir=None)
+    assert "📊" in result
+    assert "3个图片节点" in result
+    assert ".assets/" not in result
+    assert mock_run.call_count == 1
+
+
+def test_expand_whiteboards_api_error():
+    """Whiteboard API failure degrades to comment annotation."""
+    conn = WikiConnector("s", "r", "a")
+    content = '<whiteboard token="wbERR001"></whiteboard>'
+    with patch("wiki_connector.subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(
+            returncode=1, stdout="", stderr="permission denied"
+        )
+        result = conn._expand_whiteboards(content)
+    assert "<whiteboard" not in result
+    assert "⚠️" in result
+    assert "wbERR001" in result
+    assert "permission denied" in result
+
+
+def test_expand_whiteboards_multiple():
+    """Multiple whiteboard tags are all replaced."""
+    conn = WikiConnector("s", "r", "a")
+    content = (
+        'Text before\n'
+        '<whiteboard token="wbAAA01"></whiteboard>\n'
+        'Middle text\n'
+        '<whiteboard token="wbBBB02"></whiteboard>\n'
+        'Text after'
+    )
+    raw_response_1 = json.dumps({
+        "ok": True,
+        "data": {"nodes": [{"type": "text_shape", "text": {"text": "流程A"}}]}
+    })
+    raw_response_2 = json.dumps({
+        "ok": True,
+        "data": {"nodes": [{"type": "text_shape", "text": {"text": "流程B"}}]}
+    })
+    with patch("wiki_connector.subprocess.run") as mock_run:
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=raw_response_1, stderr=""),
+            MagicMock(returncode=0, stdout=raw_response_2, stderr=""),
+        ]
+        result = conn._expand_whiteboards(content)
+    assert "<whiteboard" not in result
+    assert "流程A" in result
+    assert "流程B" in result
+    assert "Text before" in result
+    assert "Middle text" in result
+    assert "Text after" in result
+    assert mock_run.call_count == 2

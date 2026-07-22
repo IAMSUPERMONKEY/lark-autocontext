@@ -86,6 +86,10 @@ class WikiConnector:
             is required to read user-private documents.
     """
 
+    _WHITEBOARD_RE = re.compile(
+        r'<whiteboard\s+token="([^"]+)"\s*(?:></whiteboard>|/>)'
+    )
+
     def __init__(self, space_id: str, raw_node_token: str,
                  agent_node_token: str, identity: str = "user"):
         self.space_id = space_id
@@ -653,6 +657,86 @@ class WikiConnector:
             node_token, self.space_id,
         )
         return False
+
+    # ------------------------------------------------------------------
+    # Whiteboard expansion (visual element semantic enhancement)
+    # ------------------------------------------------------------------
+
+    def _expand_whiteboards(self, content: str, bundle_dir: str = None) -> str:
+        """Replace ``<whiteboard token="xxx">`` tags with structured summaries.
+
+        For each whiteboard:
+        1. Call ``whiteboard +query --output_as raw`` to get node structure.
+        2. Extract ``text_shape`` node texts and count ``image`` nodes.
+        3. If image nodes > 50% of total AND ``bundle_dir`` is provided,
+           download a PNG preview via ``--output_as image``.
+        4. Replace the tag with a Markdown summary block.
+
+        Args:
+            content: Markdown cleaned by ``clean_feishu_content()``.
+            bundle_dir: Bundle directory for saving preview PNGs.
+                If ``None``, skip image download (text summary only).
+
+        Returns:
+            Markdown with whiteboard tags replaced by structured summaries.
+        """
+        def _replace_whiteboard(m):
+            token = m.group(1)
+            try:
+                raw_output = self._run_lark(
+                    ["whiteboard", "+query", "--whiteboard-token", token,
+                     "--output_as", "raw"],
+                    as_json=False,
+                )
+                data = json.loads(raw_output) if isinstance(raw_output, str) else raw_output
+                nodes = data.get("data", {}).get("nodes", [])
+
+                text_nodes = [
+                    n.get("text", {}).get("text", "")
+                    for n in nodes
+                    if n.get("type") == "text_shape" and n.get("text", {}).get("text")
+                ]
+                image_count = sum(1 for n in nodes if n.get("type") == "image")
+                total = len(nodes)
+                text_count = len(text_nodes)
+
+                # Build summary
+                token_short = token[:8] if len(token) > 8 else token
+                lines = [f"**📊 画板：whiteboard_{token_short}**"]
+
+                if text_nodes:
+                    lines.append(f"- 文字标签：{'、'.join(text_nodes)}")
+                else:
+                    lines.append("- 文字标签：（无）")
+
+                lines.append(f"- 节点统计：{text_count}个文字节点，{image_count}个图片节点")
+
+                # Download PNG if image-heavy and bundle_dir provided
+                if bundle_dir and total > 0 and image_count / total > 0.5:
+                    assets_dir = os.path.join(bundle_dir, ".assets")
+                    os.makedirs(assets_dir, exist_ok=True)
+                    img_filename = f"whiteboard_{token}.png"
+                    try:
+                        self._run_lark(
+                            ["whiteboard", "+query", "--whiteboard-token", token,
+                             "--output_as", "image", "--output", assets_dir],
+                            as_json=False,
+                        )
+                        lines.append(f"- 图片节点：{image_count}个（已生成预览图）")
+                        lines.append(
+                            f"![画板预览图](.assets/{img_filename})"
+                        )
+                    except (RuntimeError, Exception) as exc:
+                        logger.warning("Whiteboard image download failed for %s: %s", token, exc)
+                        lines.append(f"- 图片节点：{image_count}个（预览图下载失败）")
+
+                return "\n".join(lines)
+
+            except (RuntimeError, json.JSONDecodeError, KeyError) as exc:
+                logger.warning("Whiteboard expansion failed for token=%s: %s", token, exc)
+                return f"<!-- ⚠️ 画板读取失败：token={token}，原因：{exc} -->"
+
+        return self._WHITEBOARD_RE.sub(_replace_whiteboard, content)
 
 
 # ------------------------------------------------------------------
