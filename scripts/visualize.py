@@ -168,6 +168,73 @@ def scan_bundle_to_graph(bundle_dir):
     return {"nodes": nodes, "edges": valid_edges}
 
 
+def infer_edges(graph):
+    """Add inferred edges based on shared tags and document order.
+
+    Adds edges with kind='inferred_tag' or kind='inferred_order' to
+    graph['edges']. Does not duplicate edges where an explicit or
+    same-type inferred edge already exists between the same pair.
+    """
+    nodes = graph["nodes"]
+    existing_edges = graph["edges"]
+
+    # Build dedup set: (source, target, kind) and (target, source, kind)
+    seen = set()
+    for e in existing_edges:
+        seen.add((e["source"], e["target"], e["kind"]))
+        seen.add((e["target"], e["source"], e["kind"]))
+
+    new_edges = []
+
+    # --- 1. Shared tag edges (chain, not clique) ---
+    tag_groups = {}
+    for n in nodes:
+        for tag in n.get("tags", []):
+            tag_groups.setdefault(tag, []).append(n)
+    for tag, group in tag_groups.items():
+        if len(group) < 2:
+            continue
+        group_sorted = sorted(group, key=lambda n: n["label"])
+        for i in range(len(group_sorted) - 1):
+            a, b = group_sorted[i], group_sorted[i + 1]
+            key = (a["id"], b["id"], "inferred_tag")
+            rev_key = (b["id"], a["id"], "inferred_tag")
+            if (a["id"], b["id"], "explicit") in seen or \
+               (b["id"], a["id"], "explicit") in seen:
+                continue
+            if key in seen or rev_key in seen:
+                continue
+            new_edges.append({
+                "source": a["id"], "target": b["id"],
+                "kind": "inferred_tag",
+            })
+            seen.add(key)
+            seen.add(rev_key)
+
+    # --- 2. Document order edges (by timestamp, fallback filename) ---
+    def _sort_key(n):
+        ts = n.get("timestamp", "")
+        return (ts, n["id"]) if ts else ("", n["id"])
+
+    sorted_nodes = sorted(nodes, key=_sort_key)
+    for i in range(len(sorted_nodes) - 1):
+        a, b = sorted_nodes[i], sorted_nodes[i + 1]
+        key = (a["id"], b["id"], "inferred_order")
+        if key in seen:
+            continue
+        if (a["id"], b["id"], "explicit") in seen or \
+           (b["id"], a["id"], "explicit") in seen:
+            continue
+        new_edges.append({
+            "source": a["id"], "target": b["id"],
+            "kind": "inferred_order",
+        })
+        seen.add(key)
+
+    graph["edges"] = existing_edges + new_edges
+    return graph
+
+
 def compute_cited_by(graph):
     """Add cited_by list to each node (reverse edges)."""
     rev = {}
@@ -554,7 +621,9 @@ def main():
     p.add_argument("--out", default="viz.html", help="Output HTML file path")
     args = p.parse_args()
 
-    graph = compute_cited_by(scan_bundle_to_graph(args.bundle))
+    graph = scan_bundle_to_graph(args.bundle)
+    graph = infer_edges(graph)
+    graph = compute_cited_by(graph)
     Path(args.out).write_text(render_html(graph), encoding="utf-8")
     print(f"[visualize] wrote {args.out} ({len(graph['nodes'])} nodes, {len(graph['edges'])} edges)")
 
