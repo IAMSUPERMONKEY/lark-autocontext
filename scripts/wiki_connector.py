@@ -218,16 +218,46 @@ class WikiConnector:
         except Exception:
             return since_str
 
+    def _fetch_children(self, parent_node_token: str) -> list:
+        """Fetch direct children of a specific parent node.
+
+        Uses ``wiki +node-list --parent-node-token`` which returns children
+        at any depth (unlike ``--page-all`` which only returns root-level
+        nodes). Falls back to ``_fetch_all_nodes()`` filtering when the
+        parent_node_token is empty (root level).
+        """
+        if not parent_node_token:
+            # Root level: use --page-all (returns root-level nodes).
+            return self._fetch_all_nodes()
+        output = self._run_lark(
+            ["wiki", "+node-list", "--space-id", self.space_id,
+             "--parent-node-token", parent_node_token],
+            as_json=False,
+        )
+        if isinstance(output, str):
+            json_start = output.find("{")
+            if json_start > 0:
+                output = output[json_start:]
+            elif json_start == -1:
+                return []
+            data = json.loads(output)
+        else:
+            data = output
+        return data.get("data", {}).get("nodes", []) or []
+
     def list_raw_docs(self, since: str = None) -> list:
         """List documents in the raw docs area.
 
         Returns the direct children of ``raw_node_token`` as :class:`DocInfo`.
-        When ``since`` is given (ISO 8601 or Unix timestamp), only nodes whose
-        ``obj_edit_time`` is at or after ``since`` are returned.
+        When ``raw_node_token`` is empty (root level), the Agent maintenance
+        area node itself is excluded. When ``since`` is given (ISO 8601 or
+        Unix timestamp), only nodes whose ``obj_edit_time`` is at or after
+        ``since`` are returned.
         """
-        nodes = self._fetch_all_nodes()
+        nodes = self._fetch_children(self.raw_node_token)
         docs = [self._node_to_docinfo(n) for n in nodes
-                if n.get("parent_node_token") == self.raw_node_token]
+                if n.get("parent_node_token") == self.raw_node_token
+                and n.get("node_token") != self.agent_node_token]
         if since:
             since_ts = self._since_to_unix(since)
             docs = [d for d in docs if str(d.modified_time) >= since_ts]
@@ -237,11 +267,13 @@ class WikiConnector:
         """List documents in the Agent-maintained area.
 
         Returns the direct children of ``agent_node_token`` as
-        :class:`DocInfo`. Used to detect human edits in the Agent area.
+        :class:`DocInfo`. Uses ``--parent-node-token`` to query children
+        directly (works at any depth, unlike ``--page-all``). Used to detect
+        human edits in the Agent area and for dedup checks during sync.
         ``since`` filters by ``obj_edit_time`` exactly like
         :meth:`list_raw_docs`.
         """
-        nodes = self._fetch_all_nodes()
+        nodes = self._fetch_children(self.agent_node_token)
         docs = [self._node_to_docinfo(n) for n in nodes
                 if n.get("parent_node_token") == self.agent_node_token]
         if since:
@@ -535,16 +567,14 @@ class WikiConnector:
         Returns:
             The file_token (empty string when parsing fails).
         """
-        temp = tempfile.NamedTemporaryFile(
-            suffix=f"_{filename}", delete=False
-        )
-        temp_path = temp.name
+        # Use a relative path in cwd because lark-cli requires relative paths.
+        temp_name = f".lark_tmp_{filename}"
         try:
-            temp.write(file_bytes)
-            temp.close()
+            with open(temp_name, "wb") as temp:
+                temp.write(file_bytes)
             output = self._run_lark(
-                ["drive", "+upload", "--folder-token", parent_node_token,
-                 "--file", temp_path, "--file-name", filename],
+                ["drive", "+upload", "--wiki-token", parent_node_token,
+                 "--file", temp_name, "--name", filename],
                 as_json=False,
             )
             # Parse file_token: JSON first, regex fallback.
@@ -563,7 +593,7 @@ class WikiConnector:
             return file_token
         finally:
             try:
-                os.unlink(temp_path)
+                os.unlink(temp_name)
             except OSError:
                 pass
 
@@ -574,8 +604,8 @@ class WikiConnector:
             node_token: wiki node token to delete.
         """
         self._run_lark(
-            ["wiki", "+delete-node", "--space-id", self.space_id,
-             "--node-token", node_token],
+            ["wiki", "+node-delete", "--space-id", self.space_id,
+             "--node-token", node_token, "--obj-type", "wiki", "--yes"],
             as_json=False,
         )
 

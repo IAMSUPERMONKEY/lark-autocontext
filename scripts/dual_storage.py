@@ -187,6 +187,22 @@ class DualStorage:
     # Task 6: local -> Feishu push flow
     # ------------------------------------------------------------------
 
+
+    def _find_doc_by_title(self, title: str) -> str:
+        """Find a node under Agent维护区 with a matching title.
+
+        Returns the node_token if found, empty string otherwise. This is
+        used for deduplication when sync_state is missing.
+        """
+        try:
+            agent_docs = self.wiki_connector.list_agent_docs()
+            for doc in agent_docs:
+                if doc.title == title:
+                    return doc.node_token
+        except Exception as exc:
+            logger.debug("_find_doc_by_title failed: %s", exc)
+        return ""
+
     def sync_to_feishu(self, okf_path: str, okf_content: str) -> SyncResult:
         """Push local OKF document to Feishu Wiki (Agent maintenance area).
 
@@ -243,11 +259,21 @@ class DualStorage:
                 self.wiki_connector.update_doc(node_token, feishu_content)
                 action = "updated"
             else:
-                # Create a new doc under the Agent maintenance root.
-                node_token = self.wiki_connector.create_doc(
-                    self.wiki_connector.agent_node_token, title, feishu_content
-                )
-                action = "created"
+                # Dedup: check if a doc with the same title already exists
+                # under the Agent maintenance area on Feishu. This prevents
+                # duplicate creation when sync_state is lost (e.g. bundle
+                # rebuilt, test re-run). If found, update instead of create.
+                existing_node = self._find_doc_by_title(title)
+                if existing_node:
+                    node_token = existing_node
+                    self.wiki_connector.update_doc(node_token, feishu_content)
+                    action = "updated"
+                else:
+                    # Create a new doc under the Agent maintenance root.
+                    node_token = self.wiki_connector.create_doc(
+                        self.wiki_connector.agent_node_token, title, feishu_content
+                    )
+                    action = "created"
         except Exception as e:  # noqa: BLE001 - report any Feishu API failure
             logger.error(
                 "sync_to_feishu: push failed for %s: %s", okf_path, e

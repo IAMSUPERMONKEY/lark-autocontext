@@ -620,27 +620,25 @@ def test_update_doc():
 
 def test_upload_attachment():
     """upload_attachment returns file_token parsed from a JSON response."""
+    import glob
     conn = WikiConnector("space-1", "raw-root", "agent-root")
-    wrapper, paths = _tracking_temp_factory()
     response = json.dumps({"data": {"file_token": "file-abc"}})
     file_bytes = b"%PDF-1.4 fake binary content"
 
-    with patch.object(conn, "_run_lark", return_value=response) as mock_run, \
-            patch.object(tempfile, "NamedTemporaryFile", wrapper):
+    with patch.object(conn, "_run_lark", return_value=response) as mock_run:
         result = conn.upload_attachment("parent-1", "report.pdf", file_bytes)
 
     assert result == "file-abc"
     call_args = mock_run.call_args[0][0]
     expected_prefix = [
-        "drive", "+upload", "--folder-token", "parent-1",
-        "--file", "--file-name", "report.pdf",
+        "drive", "+upload", "--wiki-token", "parent-1",
+        "--file", "--name", "report.pdf",
     ]
-    # Check all expected tokens are present (order tolerant for --file-name).
+    # Check all expected tokens are present.
     for token in expected_prefix:
         assert token in call_args
     # Verify the temp file was cleaned up.
-    assert len(paths) == 1
-    assert not os.path.exists(paths[0])
+    assert glob.glob(".lark_tmp_report.pdf") == []
 
 
 # ---------------------------------------------------------------------------
@@ -648,15 +646,15 @@ def test_upload_attachment():
 # ---------------------------------------------------------------------------
 
 def test_delete_doc():
-    """delete_doc calls wiki +delete-node with space_id and node_token."""
+    """delete_doc calls wiki +node-delete with space_id, node_token, obj-type, and --yes."""
     conn = WikiConnector("space-1", "raw-root", "agent-root")
     with patch.object(conn, "_run_lark", return_value="ok") as mock_run:
         result = conn.delete_doc("node-1")
     assert result is None
     call_args = mock_run.call_args[0][0]
     assert call_args == [
-        "wiki", "+delete-node", "--space-id", "space-1",
-        "--node-token", "node-1",
+        "wiki", "+node-delete", "--space-id", "space-1",
+        "--node-token", "node-1", "--obj-type", "wiki", "--yes",
     ]
 
 
