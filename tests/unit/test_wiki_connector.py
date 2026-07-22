@@ -731,3 +731,71 @@ def test_temp_file_cleanup_on_error():
 
     # Step 1 failed before temp file creation, so no temp file to clean up.
     assert glob.glob(".lark_tmp_*.md") == []
+
+
+# ---------------------------------------------------------------------------
+# _preserve_image_alt_text
+# ---------------------------------------------------------------------------
+
+def test_preserve_image_alt_text_long_alt_becomes_caption():
+    """Long alt text (>20 chars) is converted to a caption line."""
+    from wiki_connector import _preserve_image_alt_text
+    body = "![This is a very long image description](https://example.com/img.png)"
+    result = _preserve_image_alt_text(body)
+    assert "![](https://example.com/img.png)" in result
+    assert "*📷 图片描述：This is a very long image description*" in result
+
+
+def test_preserve_image_alt_text_short_alt_preserved():
+    """Short alt text (<=20 chars) is left intact."""
+    from wiki_connector import _preserve_image_alt_text
+    body = "![logo](https://example.com/logo.png)"
+    result = _preserve_image_alt_text(body)
+    assert result == body
+
+
+def test_preserve_image_alt_text_empty_alt_preserved():
+    """Empty alt text is left intact."""
+    from wiki_connector import _preserve_image_alt_text
+    body = "![](https://example.com/img.png)"
+    result = _preserve_image_alt_text(body)
+    assert result == body
+
+
+def test_preserve_image_alt_text_multiple_images():
+    """Multiple images in the same body are all processed."""
+    from wiki_connector import _preserve_image_alt_text
+    body = (
+        "![short](url1.png)\n"
+        "![This is a long description for image 2](url2.png)\n"
+        "![Also a very long alt text here](url3.png)"
+    )
+    result = _preserve_image_alt_text(body)
+    assert "![short](url1.png)" in result  # short preserved
+    assert "*📷 图片描述：This is a long description for image 2*" in result
+    assert "*📷 图片描述：Also a very long alt text here*" in result
+
+
+def test_preserve_image_alt_text_no_images_unchanged():
+    """Body without images is returned unchanged."""
+    from wiki_connector import _preserve_image_alt_text
+    body = "This is just text with no images."
+    result = _preserve_image_alt_text(body)
+    assert result == body
+
+
+def test_okf_to_feishu_content_preserves_image_alt():
+    """okf_to_feishu_content pipeline preserves long image alt text."""
+    from wiki_connector import okf_to_feishu_content
+    okf = (
+        "---\n"
+        "type: Design Doc\n"
+        "tags: [OKR]\n"
+        "---\n"
+        "\n"
+        "# Title\n\n"
+        "![A very long image description that should be preserved](https://example.com/img.png)\n"
+    )
+    result = okf_to_feishu_content(okf)
+    assert "*📷 图片描述：A very long image description that should be preserved*" in result
+    assert "![](https://example.com/img.png)" in result

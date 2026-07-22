@@ -779,6 +779,30 @@ def strip_metadata_header(content: str) -> str:
     return body.lstrip("\n")
 
 
+def _preserve_image_alt_text(body: str) -> str:
+    """Convert long image alt text into caption lines so Feishu preserves them.
+
+    Feishu's ``docs +update --command overwrite`` strips image alt text during
+    Markdown import: ``![long description](url)`` becomes ``![](url)``. To
+    prevent content loss, this function converts alt text longer than 20
+    characters into a separate italic caption line placed below the image.
+
+    Short alt text (<=20 chars, e.g. "logo", "diagram") is left intact --
+    it is unlikely to carry meaningful information and Feishu may preserve
+    it for accessibility purposes.
+    """
+    def _replace_image(m):
+        alt = m.group(1)
+        url = m.group(2)
+        if len(alt) > 20:
+            return f"![]({url})\n\n*📷 图片描述：{alt}*"
+        return m.group(0)
+
+    return re.sub(
+        r'!\[([^\]]*)\]\(([^)]+)\)', _replace_image, body
+    )
+
+
 def okf_to_feishu_content(okf_content: str) -> str:
     """Convert OKF Markdown into Feishu-displayable content.
 
@@ -786,13 +810,13 @@ def okf_to_feishu_content(okf_content: str) -> str:
 
     1. Parse the YAML frontmatter with :func:`_parse_frontmatter`.
     2. Generate the emoji metadata header with :func:`generate_metadata_header`.
-    3. Concatenate ``header + "\\n\\n" + body``.
-
-    The Markdown body is preserved verbatim -- Feishu docx can import Markdown
-    directly, so no block-level transformation is needed here.
+    3. Preserve image alt text as caption lines (Feishu strips alt text
+       during Markdown import -- see :func:`_preserve_image_alt_text`).
+    4. Concatenate ``header + "\\n\\n" + body``.
     """
     fm, body = _parse_frontmatter(okf_content)
     header = generate_metadata_header(fm)
+    body = _preserve_image_alt_text(body)
     return header + "\n\n" + body
 
 
