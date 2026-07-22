@@ -280,6 +280,15 @@ HTML_TEMPLATE = """<!doctype html>
   .tag-pill{display:inline-block;padding:2px 8px;border-radius:10px;background:#f0f0f0;
             font-size:11px;margin:2px 4px 2px 0;color:#555}
   .empty{color:#999;font-style:italic;font-size:13px}
+  #legend{position:fixed;bottom:16px;left:16px;background:rgba(255,255,255,0.95);
+          border:1px solid #e5e5e5;border-radius:8px;padding:10px 14px;
+          font-size:12px;color:#444;z-index:100;box-shadow:0 2px 8px rgba(0,0,0,0.08)}
+  #legend h4{margin:0 0 6px;font-size:11px;color:#999;text-transform:uppercase;letter-spacing:0.5px}
+  #legend .item{display:flex;align-items:center;gap:8px;margin:3px 0}
+  #legend .line{width:28px;height:0;border-top-width:2px;border-top-style:solid}
+  #legend .line.explicit{border-top-color:#64748b;border-top-style:solid}
+  #legend .line.tag{border-top-color:#3b82f6;border-top-style:dashed}
+  #legend .line.order{border-top-color:#10b981;border-top-style:dotted}
 </style></head>
 <body>
 <div id="header">
@@ -291,6 +300,12 @@ HTML_TEMPLATE = """<!doctype html>
 </div>
 <div id="main">
   <div id="cy"></div>
+  <div id="legend">
+    <h4>Edge Types</h4>
+    <div class="item"><div class="line explicit"></div>Explicit link</div>
+    <div class="item"><div class="line tag"></div>Shared tag</div>
+    <div class="item"><div class="line order"></div>Document order</div>
+  </div>
   <div id="side"><div class="empty">点击节点查看详情</div></div>
 </div>
 <script>
@@ -329,7 +344,7 @@ function colorForType(t) {
   return COLORS_BY_TYPE[t] || stableColor(t);
 }
 
-const SIZES_BY_TYPE = {"Project":55, "Person":50, "Concept":45, "Meeting Minutes":40};
+const SIZES_BY_TYPE = {"Project":55, "Person":50, "Concept":50, "Design Doc":45, "Meeting Minutes":42};
 
 // Compute node degree (for size scaling)
 const degree = {};
@@ -362,7 +377,7 @@ const elements = [
   ...DATA.nodes.map(n => ({data:{
     id:n.id, label:_composeLabel(n), title:n.label, type:n.type,
     color: colorForType(n.type),
-    size: (SIZES_BY_TYPE[n.type] || 38) + Math.min((degree[n.id]||0) * 3, 20),
+    size: (SIZES_BY_TYPE[n.type] || 40) + Math.min((degree[n.id]||0) * 4, 24),
   }})),
   ...DATA.edges.map(e => ({data:{
     source:e.source, target:e.target,
@@ -382,22 +397,26 @@ try {
 // 布局配置：优先 cose-bilkent，不可用时 fallback 到内置 cose
 const layoutCfg = hasBilkent
   ? {name:"cose-bilkent", animate:false, randomize:true,
-     idealEdgeLength:180, nodeRepulsion:24000, edgeElasticity:0.45,
-     gravity:0.25, numIter:3000, tile:true, padding:60}
+     idealEdgeLength:280, nodeRepulsion:45000, edgeElasticity:0.45,
+     gravity:0.35, numIter:3500, tile:true, padding:60}
   : {name:"cose", animate:false, randomize:true,
-     idealEdgeLength:200, nodeRepulsion:()=>32000,
-     nodeOverlap:60, padding:60, gravity:40, numIter:2500};
+     idealEdgeLength:300, nodeRepulsion:()=>52000,
+     nodeOverlap:60, padding:60, gravity:45, numIter:3000};
 
 const cy = cytoscape({
   container: document.getElementById("cy"),
   elements,
   layout: layoutCfg,
-  wheelSensitivity: 0.2,
+  wheelSensitivity: 0.3,
+  minZoom: 0.3,
+  maxZoom: 3.0,
+  zoomingEnabled: true,
+  panningEnabled: true,
   style:[
     {selector:"node", style:{
       "background-color":"data(color)",
       "label":"data(label)",
-      "font-size":12, "font-weight":500,
+      "font-size":14, "font-weight":600,
       "text-wrap":"wrap", "text-max-width":140,
       "line-height":1.25,
       "text-valign":"center", "text-halign":"right",
@@ -411,12 +430,34 @@ const cy = cytoscape({
       "text-border-color":"#e5e5e5",
       "text-border-opacity":1,
       "width":"data(size)", "height":"data(size)",
-      "border-width":2, "border-color":"#fff",
+      "border-width":3, "border-color":"#fff",
     }},
     {selector:"node:selected", style:{
       "border-color":"#0969da", "border-width":3,
     }},
-    // Explicit edges: solid + arrow, the strongest visual weight.
+    // Explicit edges: solid + arrow.
+    {selector:"edge[kind='explicit']", style:{
+      "width":2, "line-color":"#64748b",
+      "target-arrow-color":"#64748b",
+      "target-arrow-shape":"triangle",
+      "curve-style":"bezier", "arrow-scale":0.9,
+    }},
+    // Inferred tag edges: dashed, blue, no arrow.
+    {selector:"edge[kind='inferred_tag']", style:{
+      "width":1.5, "line-color":"#3b82f6",
+      "line-style":"dashed",
+      "target-arrow-shape":"none",
+      "curve-style":"bezier",
+    }},
+    // Inferred order edges: dotted, green, with arrow.
+    {selector:"edge[kind='inferred_order']", style:{
+      "width":1.5, "line-color":"#10b981",
+      "line-style":"dotted",
+      "target-arrow-color":"#10b981",
+      "target-arrow-shape":"triangle",
+      "curve-style":"bezier", "arrow-scale":0.7,
+    }},
+    // Generic edge fallback.
     {selector:"edge", style:{
       "width":2, "line-color":"#64748b",
       "target-arrow-color":"#64748b",
@@ -494,6 +535,29 @@ document.getElementById("side").innerHTML = '<div id="detail-container"><div cla
 cy.on("tap","node",(e)=>{
   const n = byId[e.target.id()];
   if (n) renderDetail(n);
+});
+
+// --- Hover highlight: neighbors stay visible, rest dims ---
+cy.on("mouseover","node",function(evt){
+  var node = evt.target;
+  var neighborhood = node.closedNeighborhood();
+  cy.elements().difference(neighborhood).style("opacity",0.2);
+  node.style("border-color","#f59e0b").style("border-width","4px");
+  neighborhood.edges().style("width",3);
+});
+cy.on("mouseout","node",function(evt){
+  cy.elements().style("opacity",1);
+  cy.nodes().style("border-color","#fff").style("border-width","3px");
+  cy.edges().style("width",2);
+  cy.edges("[kind='inferred_tag']").style("width",1.5);
+  cy.edges("[kind='inferred_order']").style("width",1.5);
+});
+
+// Double-click on empty canvas resets view
+cy.on("tap",function(evt){
+  if(evt.target === cy){
+    cy.animate({fit:{eles:cy.elements(),padding:50}},{duration:300});
+  }
 });
 
 function applyFilters(){
