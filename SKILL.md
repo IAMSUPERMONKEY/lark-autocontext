@@ -306,6 +306,19 @@ Task(subagent_type="general_purpose_task",
   response_language="Chinese")
 ```
 
+**图片描述规则**（subagent 在分类时执行）：
+
+检查 content 中的图片引用 `![alt](url)`：
+
+1. 如果 alt text 已有描述（非空、非纯文件名）→ 保留不动
+2. 如果 alt text 为空 `![](url)` 或仅是文件名：
+   a. 如果你具备视觉识图能力，尝试描述图片内容，填入 alt text
+   b. 如果你无法识别图片，标注为 `![图片内容待补充](url)`
+3. 对于画板预览图 `![画板预览图](.assets/xxx.png)`：
+   a. 如果你具备视觉识图能力，描述画板中的流程、结构、数据
+   b. 如果你无法识别，保留 `画板预览图` 作为 alt text
+4. 描述要求：一句话概括图片核心信息（谁/什么/做什么），不超过50字
+
 ### Step A3: 验收分类结果 (主对话执行)
 
 > **强制规则**：主对话必须按以下清单逐项验收，任何一项不通过就打回 subagent 重做。
@@ -412,6 +425,19 @@ Task(subagent_type="general_purpose_task",
 7. 每个 JSON 元素必须包含 `"_classified_by": "subagent"` 字段（okf_writer 会校验此签名，缺失会触发警告）""",
   response_language="Chinese")
 ```
+
+**图片描述规则**（subagent 在分类时执行）：
+
+检查 content 中的图片引用 `![alt](url)`：
+
+1. 如果 alt text 已有描述（非空、非纯文件名）→ 保留不动
+2. 如果 alt text 为空 `![](url)` 或仅是文件名：
+   a. 如果你具备视觉识图能力，尝试描述图片内容，填入 alt text
+   b. 如果你无法识别图片，标注为 `![图片内容待补充](url)`
+3. 对于画板预览图 `![画板预览图](.assets/xxx.png)`：
+   a. 如果你具备视觉识图能力，描述画板中的流程、结构、数据
+   b. 如果你无法识别，保留 `画板预览图` 作为 alt text
+4. 描述要求：一句话概括图片核心信息（谁/什么/做什么），不超过50字
 
 ### Step B3: 验收分类结果 (主对话执行)
 
