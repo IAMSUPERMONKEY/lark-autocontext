@@ -161,12 +161,26 @@ class WikiConnector:
         shortcut whose stdout is JSON-as-plain-text) and parses the
         ``data.nodes`` array. This is the shared backing fetch for all
         ``list_*`` read operations and for node_token -> obj_token resolution.
+
+        The ``--page-all`` flag may emit progress lines (e.g.
+        ``"Found 6 node(s)"``) before the JSON payload. We strip any
+        leading non-JSON text by finding the first ``{`` character.
         """
         output = self._run_lark(
             ["wiki", "+node-list", "--space-id", self.space_id, "--page-all"],
             as_json=False,
         )
-        data = json.loads(output) if isinstance(output, str) else output
+        if isinstance(output, str):
+            # Strip progress prefix lines (e.g. "Found 6 node(s)")
+            # by finding the first '{' character.
+            json_start = output.find("{")
+            if json_start > 0:
+                output = output[json_start:]
+            elif json_start == -1:
+                return []
+            data = json.loads(output)
+        else:
+            data = output
         return data.get("data", {}).get("nodes", []) or []
 
     @staticmethod
@@ -264,9 +278,37 @@ class WikiConnector:
     def _resolve_obj_token(self, node_token: str) -> str:
         """Resolve a wiki ``node_token`` to its underlying ``obj_token``.
 
-        The wiki node list maps each node_token to the obj_token of the
-        backing doc/sheet/file. Returns "" when the node is not found.
+        Uses ``wiki +node-get --token <node_token>`` for a direct lookup.
+        This works for nodes at any depth in the tree, unlike
+        ``_fetch_all_nodes()`` which only returns root-level nodes.
+
+        Falls back to a ``_fetch_all_nodes()`` scan if the direct call fails
+        (e.g. permission issues), so existing behaviour is preserved.
+
+        Returns "" when the obj_token cannot be resolved.
         """
+        # Primary path: direct node-get (works at any depth).
+        try:
+            output = self._run_lark(
+                ["wiki", "+node-get", "--token", node_token],
+                as_json=False,
+            )
+            if isinstance(output, str):
+                json_start = output.find("{")
+                if json_start >= 0:
+                    output = output[json_start:]
+            data = json.loads(output) if isinstance(output, str) else output
+            obj_token = data.get("data", {}).get("obj_token", "")
+            if obj_token:
+                return obj_token
+        except (RuntimeError, json.JSONDecodeError, ValueError) as exc:
+            logger.debug(
+                "_resolve_obj_token: node-get failed for %s, "
+                "falling back to node-list scan: %s",
+                node_token, exc,
+            )
+
+        # Fallback: scan the root-level node list (may miss child nodes).
         for n in self._fetch_all_nodes():
             if n.get("node_token") == node_token:
                 return n.get("obj_token", "")
@@ -378,13 +420,11 @@ class WikiConnector:
                    content_md: str) -> str:
         """Create a new Feishu docx under ``parent_node_token``.
 
-        Writes ``content_md`` to a temp file and uploads it via
-        ``wiki +create-node``. Returns the newly created node_token.
+        Two-step process:
+        1. Create a wiki node via ``wiki +node-create`` (creates empty docx).
+        2. Write content via ``docs +update --command overwrite``.
 
-        The lark-cli response may be JSON (``{"data": {"node_token": "..."}}``)
-        or plain text containing the token. JSON is tried first; on failure a
-        regex fallback extracts the token from free-form output. The temp file
-        is always cleaned up in a ``finally`` block.
+        Returns the newly created node_token.
 
         Args:
             parent_node_token: parent wiki node to create the doc under.
@@ -394,68 +434,85 @@ class WikiConnector:
         Returns:
             The new node_token (empty string when parsing fails).
         """
-        temp = tempfile.NamedTemporaryFile(
-            mode="w", suffix=".md", delete=False, encoding="utf-8"
+        # Step 1: Create the wiki node (empty docx with title).
+        output = self._run_lark(
+            ["wiki", "+node-create", "--space-id", self.space_id,
+             "--parent-node-token", parent_node_token,
+             "--obj-type", "docx", "--title", title],
+            as_json=False,
         )
-        temp_path = temp.name
+        # Parse node_token: JSON first, regex fallback.
+        node_token = ""
         try:
-            temp.write(content_md)
-            temp.close()
-            output = self._run_lark(
-                ["wiki", "+create-node", "--space-id", self.space_id,
-                 "--parent-node-token", parent_node_token,
-                 "--node-type", "docx", "--title", title,
-                 "--file", temp_path],
-                as_json=False,
+            if isinstance(output, str):
+                json_start = output.find("{")
+                if json_start >= 0:
+                    output = output[json_start:]
+            data = json.loads(output) if isinstance(output, str) else output
+            node_token = data.get("data", {}).get("node_token", "")
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            pass
+        if not node_token:
+            match = re.search(
+                r'node[_-]?token["\s:]+([a-zA-Z0-9]+)',
+                output if isinstance(output, str) else ""
             )
-            # Parse node_token: JSON first, regex fallback.
-            node_token = ""
-            try:
-                data = json.loads(output) if isinstance(output, str) else output
-                node_token = data.get("data", {}).get("node_token", "")
-            except (json.JSONDecodeError, AttributeError, TypeError):
-                pass
-            if not node_token:
-                match = re.search(
-                    r'node[_-]?token["\s:]+([a-zA-Z0-9]+)', output
+            if match:
+                node_token = match.group(1)
+
+        if not node_token:
+            return ""
+
+        # Step 2: Write content to the newly created document.
+        # Use a relative path in cwd because lark-cli requires relative paths.
+        temp_name = f".lark_tmp_{node_token}.md"
+        try:
+            with open(temp_name, "w", encoding="utf-8") as temp:
+                temp.write(content_md)
+            obj_token = self._resolve_obj_token(node_token)
+            if obj_token:
+                self._run_lark(
+                    ["docs", "+update", "--doc", obj_token,
+                     "--doc-format", "markdown", "--command", "overwrite",
+                     "--content", "@" + temp_name],
+                    as_json=False,
                 )
-                if match:
-                    node_token = match.group(1)
-            return node_token
         finally:
             try:
-                os.unlink(temp_path)
+                os.unlink(temp_name)
             except OSError:
                 pass
+
+        return node_token
 
     def update_doc(self, node_token: str, content_md: str) -> None:
         """Update an existing docx content (full Markdown replace).
 
         Resolves ``node_token`` -> ``obj_token`` via the wiki node list, writes
         ``content_md`` to a temp file, and uploads it through
-        ``docs +update --doc-format markdown``. The temp file is always
+        ``docs +update --doc <obj_token> --doc-format markdown --command
+        overwrite --content @<file>``. The temp file is always
         cleaned up in a ``finally`` block.
 
         Args:
             node_token: wiki node token of the document to update.
             content_md: new Markdown content (replaces the existing body).
         """
-        temp = tempfile.NamedTemporaryFile(
-            mode="w", suffix=".md", delete=False, encoding="utf-8"
-        )
-        temp_path = temp.name
+        # Use a relative path in cwd because lark-cli requires relative paths.
+        temp_name = f".lark_tmp_{node_token}.md"
         try:
-            temp.write(content_md)
-            temp.close()
+            with open(temp_name, "w", encoding="utf-8") as temp:
+                temp.write(content_md)
             obj_token = self._resolve_obj_token(node_token)
             self._run_lark(
                 ["docs", "+update", "--doc", obj_token,
-                 "--doc-format", "markdown", "--file", temp_path],
+                 "--doc-format", "markdown", "--command", "overwrite",
+                 "--content", "@" + temp_name],
                 as_json=False,
             )
         finally:
             try:
-                os.unlink(temp_path)
+                os.unlink(temp_name)
             except OSError:
                 pass
 
@@ -639,7 +696,7 @@ def generate_metadata_header(frontmatter: dict) -> str:
     ``"\\n\\n"`` separator before the body).
     """
     # Line 1: type (always, default "Other") | project | tags
-    line1_parts = [f"📝 类型：{frontmatter.get('type') or 'Other'}"]
+    line1_parts = [f"📝 类型：{frontmatter.get('doc_type') or frontmatter.get('type') or 'Other'}"]
     if frontmatter.get("project"):
         line1_parts.append(f"项目：{frontmatter['project']}")
     if frontmatter.get("tags"):

@@ -244,10 +244,22 @@ class QueryEngine:
         """
         if not text:
             return text
-        return re.sub(
+        # 1. CJK followed by CJK
+        text = re.sub(
             r'([\u4e00-\u9fff\u3400-\u4dbf])(?=[\u4e00-\u9fff\u3400-\u4dbf])',
             r'\1 ', text,
         )
+        # 2. ASCII alphanumeric followed by CJK
+        text = re.sub(
+            r'([a-zA-Z0-9])(?=[\u4e00-\u9fff\u3400-\u4dbf])',
+            r'\1 ', text,
+        )
+        # 3. CJK followed by ASCII alphanumeric
+        text = re.sub(
+            r'([\u4e00-\u9fff\u3400-\u4dbf])(?=[a-zA-Z0-9])',
+            r'\1 ', text,
+        )
+        return text
 
     @staticmethod
     def _list_to_str(value) -> str:
@@ -319,7 +331,7 @@ class QueryEngine:
                         fm.get("resource", "") or "",
                         orig_title,
                         orig_desc,
-                        fm.get("type", "") or "",
+                        fm.get("doc_type", "") or fm.get("type", "") or "",
                         fm.get("project", "") or "",
                         tags_str,
                         people_str,
@@ -528,6 +540,18 @@ class QueryEngine:
         processed_query = self._preprocess_query(query)
 
         # ---- Stage 1: FTS5 recall ----
+        # When structured filters are active, the LIMIT must be larger than
+        # top_n so that enough candidates survive the Python-side filtering
+        # in Stage 2. Without this, a LIMIT applied before filtering can
+        # return 0 results if the top-N FTS matches all get filtered out.
+        has_filters = filters is not None and any(
+            v is not None for v in (
+                filters.project, filters.doc_type, filters.tags,
+                filters.people, filters.date_from, filters.date_to,
+            )
+        )
+        fts_limit = max(top_n * 50, 500) if has_filters else top_n
+
         conn = sqlite3.connect(self.db_path)
         try:
             try:
@@ -544,7 +568,7 @@ class QueryEngine:
                     ORDER BY rank
                     LIMIT ?
                     """,
-                    (processed_query, top_n),
+                    (processed_query, fts_limit),
                 ).fetchall()
             except sqlite3.OperationalError:
                 # FTS5 query syntax error -> empty result.

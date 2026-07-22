@@ -855,7 +855,7 @@ def test_preprocess_query_cjk(tmp_path):
     # ASCII queries are left untouched.
     assert engine._preprocess_query("architecture") == "architecture"
     # Mixed CJK + ASCII keeps CJK spacing without trailing spaces.
-    assert engine._preprocess_query("重构Pipeline") == "重 构Pipeline"
+    assert engine._preprocess_query("重构Pipeline") == "重 构 Pipeline"
 
 
 # ---------------------------------------------------------------------------

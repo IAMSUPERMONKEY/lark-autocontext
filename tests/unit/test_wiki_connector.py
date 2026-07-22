@@ -314,11 +314,11 @@ def test_fetch_doc_content():
     doc_payload = json.dumps({"data": {"document": {"content": raw_content}}})
 
     def fake_run(cmd, *args, **kwargs):
-        # lark-cli shortcut elements carry a '+' prefix (e.g. '+node-list'), so
+        # lark-cli shortcut elements carry a '+' prefix (e.g. '+node-get'), so
         # match by substring across the whole joined command string.
         cmd_str = " ".join(cmd)
-        if "node-list" in cmd_str:
-            return _ok(node_list_payload)
+        if "node-get" in cmd_str:
+            return _ok(json.dumps({"data": {"obj_token": "obj-123"}}))
         if "fetch" in cmd_str:
             return _ok(doc_payload)
         return _ok("{}")
@@ -328,7 +328,7 @@ def test_fetch_doc_content():
                   return_value="CLEANED_OUTPUT") as mock_clean:
         result = conn.fetch_doc_content("target")
 
-    # Two lark-cli calls: node-list (resolve obj_token) + docs fetch (content).
+    # Two lark-cli calls: node-get (resolve obj_token) + docs fetch (content).
     assert mock_run.call_count == 2
     mock_clean.assert_called_once_with(raw_content)
     assert result == "CLEANED_OUTPUT"
@@ -357,11 +357,11 @@ def test_fetch_doc_meta():
     }}})
 
     def fake_run(cmd, *args, **kwargs):
-        # lark-cli shortcut elements carry a '+' prefix (e.g. '+node-list'), so
+        # lark-cli shortcut elements carry a '+' prefix (e.g. '+node-get'), so
         # match by substring across the whole joined command string.
         cmd_str = " ".join(cmd)
-        if "node-list" in cmd_str:
-            return _ok(node_list_payload)
+        if "node-get" in cmd_str:
+            return _ok(json.dumps({"data": {"obj_token": "obj-meta"}}))
         if "inspect" in cmd_str:
             return _ok(inspect_payload)
         if "fetch" in cmd_str:
@@ -371,7 +371,7 @@ def test_fetch_doc_meta():
     with patch("subprocess.run", side_effect=fake_run) as mock_run:
         meta = conn.fetch_doc_meta("meta-node")
 
-    # Three lark-cli calls: node-list + drive inspect + docs fetch --detail full.
+    # Three lark-cli calls: node-get + drive inspect + docs fetch --detail full.
     assert mock_run.call_count == 3
     assert isinstance(meta, DocMeta)
     assert meta.title == "Meta Doc Title"
@@ -510,46 +510,67 @@ def _tracking_temp_factory():
 # ---------------------------------------------------------------------------
 
 def test_create_doc_returns_node_token():
-    """create_doc returns node_token parsed from a JSON lark-cli response."""
-    conn = WikiConnector("space-1", "raw-root", "agent-root")
-    wrapper, paths = _tracking_temp_factory()
-    response = json.dumps({"data": {"node_token": "new-node-abc"}})
+    """create_doc returns node_token parsed from a JSON lark-cli response.
 
-    with patch.object(conn, "_run_lark", return_value=response) as mock_run, \
-            patch.object(tempfile, "NamedTemporaryFile", wrapper):
+    Two-step process: 1) wiki +node-create (no --file), 2) docs +update.
+    """
+    import glob
+    conn = WikiConnector("space-1", "raw-root", "agent-root")
+    create_response = json.dumps({"data": {"node_token": "new-node-abc"}})
+    nodes_payload = json.dumps({"data": {"nodes": [
+        {"node_token": "new-node-abc", "obj_token": "obj-abc",
+         "title": "New Doc", "obj_type": "docx", "obj_edit_time": "1700000000",
+         "parent_node_token": "agent-root", "has_child": False}
+    ]}})
+
+    def fake_run_lark(args, as_json=True, retries=3):
+        joined = " ".join(args)
+        if "+node-get" in joined:
+            return json.dumps({"data": {"obj_token": "obj-abc"}})
+        if "+node-create" in joined:
+            return create_response
+        if "+update" in joined:
+            return "ok"
+        return ""
+
+    with patch.object(conn, "_run_lark", side_effect=fake_run_lark) as mock_run:
         result = conn.create_doc("parent-1", "New Doc", "# Hello world")
 
     assert result == "new-node-abc"
-    # Verify _run_lark was called with the expected lark-cli args.
-    call_args = mock_run.call_args[0][0]
-    expected_prefix = [
-        "wiki", "+create-node", "--space-id", "space-1",
-        "--parent-node-token", "parent-1", "--node-type", "docx",
-        "--title", "New Doc", "--file",
-    ]
-    assert call_args[:len(expected_prefix)] == expected_prefix
-    # A temp path follows --file.
-    assert len(call_args) == len(expected_prefix) + 1
-    assert isinstance(call_args[-1], str)
-    # Verify the temp file was cleaned up.
-    assert len(paths) == 1
-    assert not os.path.exists(paths[0])
+    # First call: wiki +node-create (no --file flag).
+    first_call_args = mock_run.call_args_list[0][0][0]
+    assert "wiki" in first_call_args
+    assert "+node-create" in first_call_args
+    assert "--file" not in first_call_args
+    assert "--title" in first_call_args
+    # Second call: wiki +node-get (resolve obj_token for step 2).
+    second_call_args = mock_run.call_args_list[1][0][0]
+    assert "+node-get" in second_call_args
+    # Third call: docs +update (write content).
+    third_call_args = mock_run.call_args_list[2][0][0]
+    assert "+update" in third_call_args
+    # Temp file cleaned up (no .lark_tmp_*.md files left behind).
+    assert glob.glob(".lark_tmp_*.md") == []
 
 
 def test_create_doc_plain_text_response():
     """create_doc falls back to regex when the response is plain text."""
+    import glob
     conn = WikiConnector("space-1", "raw-root", "agent-root")
-    wrapper, paths = _tracking_temp_factory()
-    # Plain text (not JSON) containing the token.
-    response = "node_token: abc123"
 
-    with patch.object(conn, "_run_lark", return_value=response), \
-            patch.object(tempfile, "NamedTemporaryFile", wrapper):
+    def fake_run_lark(args, as_json=True, retries=3):
+        joined = " ".join(args)
+        if "node-list" in joined:
+            return json.dumps({"data": {"nodes": []}})
+        if "+node-create" in joined:
+            return "node_token: abc123"
+        return ""
+
+    with patch.object(conn, "_run_lark", side_effect=fake_run_lark):
         result = conn.create_doc("parent-1", "Plain Doc", "# Body")
 
     assert result == "abc123"
-    assert len(paths) == 1
-    assert not os.path.exists(paths[0])
+    assert glob.glob(".lark_tmp_*.md") == []
 
 
 # ---------------------------------------------------------------------------
@@ -558,8 +579,8 @@ def test_create_doc_plain_text_response():
 
 def test_update_doc():
     """update_doc resolves obj_token then calls docs +update with a temp file."""
+    import glob
     conn = WikiConnector("space-1", "raw-root", "agent-root")
-    wrapper, paths = _tracking_temp_factory()
     nodes = [
         {"node_token": "node-1", "obj_token": "obj-123", "title": "Doc",
          "obj_type": "docx", "obj_edit_time": "1700000000",
@@ -569,29 +590,28 @@ def test_update_doc():
 
     def fake_run_lark(args, as_json=True, retries=3):
         joined = " ".join(args)
-        if "node-list" in joined:
-            return node_list_payload
+        if "+node-get" in joined:
+            return json.dumps({"data": {"obj_token": "obj-123"}})
         if "+update" in joined:
             return "ok"
         return ""
 
-    with patch.object(conn, "_run_lark", side_effect=fake_run_lark) as mock_run, \
-            patch.object(tempfile, "NamedTemporaryFile", wrapper):
+    with patch.object(conn, "_run_lark", side_effect=fake_run_lark) as mock_run:
         result = conn.update_doc("node-1", "# Updated content")
 
     assert result is None
-    # Two lark-cli calls: node-list (resolve obj_token) + docs update.
+    # Two lark-cli calls: node-get (resolve obj_token) + docs update.
     assert mock_run.call_count == 2
     update_args = mock_run.call_args_list[1][0][0]
     expected_prefix = [
         "docs", "+update", "--doc", "obj-123",
-        "--doc-format", "markdown", "--file",
+        "--doc-format", "markdown", "--command", "overwrite",
     ]
     assert update_args[:len(expected_prefix)] == expected_prefix
-    assert len(update_args) == len(expected_prefix) + 1  # temp_path
-    # Verify the temp file was cleaned up.
-    assert len(paths) == 1
-    assert not os.path.exists(paths[0])
+    assert "--content" in update_args
+    assert any(str(a).startswith("@") for a in update_args)
+    # Temp file cleaned up.
+    assert glob.glob(".lark_tmp_*.md") == []
 
 
 # ---------------------------------------------------------------------------
@@ -699,16 +719,17 @@ def test_check_doc_changed_node_not_found():
 # ---------------------------------------------------------------------------
 
 def test_temp_file_cleanup_on_error():
-    """create_doc still cleans up the temp file when _run_lark raises."""
-    conn = WikiConnector("space-1", "raw-root", "agent-root")
-    wrapper, paths = _tracking_temp_factory()
+    """create_doc raises when _run_lark fails during node creation (step 1).
 
-    with patch.object(conn, "_run_lark", side_effect=RuntimeError("lark-cli failed")), \
-            patch.object(tempfile, "NamedTemporaryFile", wrapper):
+    In the two-step process, if step 1 (node creation) fails, no temp file
+    is created yet. The error propagates immediately.
+    """
+    import glob
+    conn = WikiConnector("space-1", "raw-root", "agent-root")
+
+    with patch.object(conn, "_run_lark", side_effect=RuntimeError("lark-cli failed")):
         with pytest.raises(RuntimeError):
             conn.create_doc("parent-1", "Doc", "# content")
 
-    # The finally block must have removed the temp file even though _run_lark
-    # raised.
-    assert len(paths) == 1
-    assert not os.path.exists(paths[0])
+    # Step 1 failed before temp file creation, so no temp file to clean up.
+    assert glob.glob(".lark_tmp_*.md") == []
